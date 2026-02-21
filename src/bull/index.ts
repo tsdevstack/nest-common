@@ -1,0 +1,1 @@
+export { BullConfigModule } from './bull-config.module';

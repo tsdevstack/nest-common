@@ -1,0 +1,102 @@
+{
+  "name": "@tsdevstack/nest-common",
+  "version": "0.0.1",
+  "description": "Shared NestJS modules for tsdevstack microservices — auth, rate limiting, secrets, observability, and more",
+  "type": "commonjs",
+  "author": "tsdevstack",
+  "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tsdevstack/nest-common.git"
+  },
+  "homepage": "https://github.com/tsdevstack/nest-common",
+  "bugs": {
+    "url": "https://github.com/tsdevstack/nest-common/issues"
+  },
+  "keywords": [
+    "tsdevstack",
+    "nestjs",
+    "microservices",
+    "auth",
+    "rate-limiting",
+    "secrets-management",
+    "observability",
+    "opentelemetry",
+    "prisma",
+    "redis"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rslib build",
+    "dev": "tsc --noEmit --watch",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "test": "rstest run",
+    "tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.984.0",
+    "@azure/identity": "^4.13.0",
+    "@azure/keyvault-secrets": "^4.10.0",
+    "@google-cloud/secret-manager": "^6.1.1",
+    "@nestjs/bullmq": "^11.0.0",
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.0",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.0",
+    "@nestjs/swagger": "11.2.0",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-prometheus": "^0.57.2",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.57.2",
+    "@opentelemetry/instrumentation-http": "^0.57.2",
+    "@opentelemetry/resources": "^1.30.1",
+    "@opentelemetry/sdk-metrics": "^1.30.1",
+    "@opentelemetry/sdk-node": "^0.57.2",
+    "@opentelemetry/sdk-trace-node": "^1.30.1",
+    "@opentelemetry/semantic-conventions": "^1.38.0",
+    "@prisma/adapter-pg": "^7.4.0",
+    "@prisma/client": "^7.4.0",
+    "bullmq": "^5.0.0",
+    "compression": "^1.8.0",
+    "dotenv": "^16.0.0",
+    "express": "^5.0.0",
+    "google-auth-library": "^9.0.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.6.1",
+    "pg": "^8.13.1",
+    "pino": "^10.1.0",
+    "resend": "^6.6.0",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@rslib/core": "^0.19.6",
+    "@rstest/adapter-rslib": "^0.2.0",
+    "@rstest/core": "^0.8.5",
+    "@types/compression": "^1.8.1",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.11.11",
+    "eslint": "^9.39.0",
+    "globals": "^16.4.0",
+    "pino-pretty": "^13.1.2",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2"
+  }
+}
