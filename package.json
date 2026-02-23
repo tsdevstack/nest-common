@@ -1,6 +1,6 @@
 {
   "name": "@tsdevstack/nest-common",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "Shared NestJS modules for tsdevstack microservices — auth, rate limiting, secrets, observability, and more",
   "type": "commonjs",
   "author": "tsdevstack",
