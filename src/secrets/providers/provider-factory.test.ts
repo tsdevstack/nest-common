@@ -151,7 +151,7 @@ describe('SecretsProviderFactory', () => {
     });
 
     describe('Azure provider', () => {
-      it('should create Azure provider when configured', () => {
+      it('should create Azure provider with full SP credentials', () => {
         process.env.SECRETS_PROVIDER = 'azure';
         process.env.PROJECT_NAME = 'test-project';
         process.env.AZURE_CLIENT_ID = 'client-id';
@@ -169,12 +169,39 @@ describe('SecretsProviderFactory', () => {
         );
       });
 
-      it('should throw error when Azure credentials are missing', () => {
+      it('should create Azure provider with managed identity (no CLIENT_SECRET)', () => {
+        process.env.SECRETS_PROVIDER = 'azure';
+        process.env.PROJECT_NAME = 'test-project';
+        process.env.AZURE_CLIENT_ID = 'managed-identity-client-id';
+        process.env.AZURE_KEYVAULT_NAME = 'keyvault-name';
+        delete process.env.AZURE_CLIENT_SECRET;
+        delete process.env.AZURE_TENANT_ID;
+
+        SecretsProviderFactory.createProvider('test-service');
+
+        expect(AzureSecretsProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectName: 'test-project',
+            serviceName: 'test-service',
+          }),
+        );
+      });
+
+      it('should throw error when AZURE_CLIENT_ID is missing', () => {
         process.env.SECRETS_PROVIDER = 'azure';
         process.env.PROJECT_NAME = 'test-project';
         delete process.env.AZURE_CLIENT_ID;
-        delete process.env.AZURE_CLIENT_SECRET;
-        delete process.env.AZURE_TENANT_ID;
+        delete process.env.AZURE_KEYVAULT_NAME;
+
+        expect(() =>
+          SecretsProviderFactory.createProvider('test-service'),
+        ).toThrow('Missing required environment variables for AZURE');
+      });
+
+      it('should throw error when AZURE_KEYVAULT_NAME is missing', () => {
+        process.env.SECRETS_PROVIDER = 'azure';
+        process.env.PROJECT_NAME = 'test-project';
+        process.env.AZURE_CLIENT_ID = 'client-id';
         delete process.env.AZURE_KEYVAULT_NAME;
 
         expect(() =>

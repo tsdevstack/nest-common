@@ -21,6 +21,9 @@ rs.mock('@azure/identity', () => ({
   ClientSecretCredential: class {
     constructor() {}
   },
+  DefaultAzureCredential: class {
+    constructor() {}
+  },
 }));
 
 describe('AzureSecretsProvider', () => {
@@ -79,7 +82,23 @@ describe('AzureSecretsProvider', () => {
       expect(p.getProviderName()).toBe('azure');
     });
 
-    it('should throw error when credentials are missing', () => {
+    it('should fall back to DefaultAzureCredential when AZURE_CLIENT_SECRET is missing', () => {
+      delete process.env.AZURE_CLIENT_SECRET;
+
+      const config: CloudProviderConfig = {
+        projectName: 'testproject',
+        serviceName: 'test-service',
+        providerConfig: {
+          keyVaultName: 'test-keyvault',
+        },
+      };
+
+      // Should NOT throw — uses DefaultAzureCredential (managed identity)
+      const p = new AzureSecretsProvider(config);
+      expect(p.getProviderName()).toBe('azure');
+    });
+
+    it('should fall back to DefaultAzureCredential when AZURE_TENANT_ID is missing', () => {
       delete process.env.AZURE_TENANT_ID;
 
       const config: CloudProviderConfig = {
@@ -90,9 +109,9 @@ describe('AzureSecretsProvider', () => {
         },
       };
 
-      expect(() => new AzureSecretsProvider(config)).toThrow(
-        'Azure credentials are required',
-      );
+      // Should NOT throw — uses DefaultAzureCredential (managed identity)
+      const p = new AzureSecretsProvider(config);
+      expect(p.getProviderName()).toBe('azure');
     });
 
     it('should initialize with valid config', () => {

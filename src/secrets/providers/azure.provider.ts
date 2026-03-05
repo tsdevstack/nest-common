@@ -1,5 +1,9 @@
 import { SecretClient } from '@azure/keyvault-secrets';
-import { ClientSecretCredential } from '@azure/identity';
+import {
+  DefaultAzureCredential,
+  ClientSecretCredential,
+} from '@azure/identity';
+import type { TokenCredential } from '@azure/identity';
 import {
   CloudSecretsProvider,
   CloudProviderConfig,
@@ -29,25 +33,22 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
       );
     }
 
-    // Initialize Azure Key Vault client
-    // Credentials are automatically loaded from:
-    // 1. Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
-    // 2. Managed identity (in Azure environments)
+    // Credential strategy:
+    // 1. If AZURE_CLIENT_SECRET is set → use ClientSecretCredential (backward compat / local dev)
+    // 2. Otherwise → use DefaultAzureCredential (managed identity in Container Apps)
     const tenantId = process.env.AZURE_TENANT_ID;
     const clientId = process.env.AZURE_CLIENT_ID;
     const clientSecret = process.env.AZURE_CLIENT_SECRET;
 
-    if (!tenantId || !clientId || !clientSecret) {
-      throw new Error(
-        'Azure credentials are required. Set AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET environment variables.',
-      );
-    }
+    let credential: TokenCredential;
 
-    const credential = new ClientSecretCredential(
-      tenantId,
-      clientId,
-      clientSecret,
-    );
+    if (tenantId && clientId && clientSecret) {
+      credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+    } else {
+      // DefaultAzureCredential picks up managed identity in Azure.
+      // AZURE_CLIENT_ID selects the user-assigned identity.
+      credential = new DefaultAzureCredential();
+    }
 
     const vaultUrl = `https://${this.keyVaultName}.vault.azure.net`;
     this.client = new SecretClient(vaultUrl, credential);

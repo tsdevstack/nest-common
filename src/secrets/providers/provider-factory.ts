@@ -22,7 +22,7 @@ export type SecretsProviderType = 'local' | 'gcp' | 'aws' | 'azure';
  * Provider-specific env vars:
  * - GCP: GCP_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS (or K_SERVICE on Cloud Run)
  * - AWS: AWS_REGION (credentials from task role on ECS, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)
- * - Azure: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_KEYVAULT_NAME
+ * - Azure: AZURE_CLIENT_ID, AZURE_KEYVAULT_NAME (+ AZURE_CLIENT_SECRET, AZURE_TENANT_ID for SP auth)
  *
  * The CLI (cloud:init, cloud-secrets:*) handles all file operations.
  * Runtime just reads env vars and fails fast if missing.
@@ -141,10 +141,10 @@ export class SecretsProviderFactory {
         break;
 
       case 'azure':
+        // AZURE_CLIENT_ID is required (identifies the managed identity or SP)
         if (!process.env.AZURE_CLIENT_ID) missing.push('AZURE_CLIENT_ID');
-        if (!process.env.AZURE_CLIENT_SECRET)
-          missing.push('AZURE_CLIENT_SECRET');
-        if (!process.env.AZURE_TENANT_ID) missing.push('AZURE_TENANT_ID');
+        // AZURE_CLIENT_SECRET + AZURE_TENANT_ID are only required without managed identity.
+        // In Container Apps, DefaultAzureCredential uses the user-assigned managed identity.
         if (!process.env.AZURE_KEYVAULT_NAME)
           missing.push('AZURE_KEYVAULT_NAME');
         break;
