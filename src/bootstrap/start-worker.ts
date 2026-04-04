@@ -1,8 +1,8 @@
 import { Type, Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import * as http from 'http';
-import { loadEnvIfExists } from './create-app';
-import { readPackageJson } from '../utils/package-json';
+import { loadEnvIfExists } from './load-env-if-exists';
+import { readPackageJson } from '../utils/read-package-json';
 
 interface StartWorkerOptions {
   healthPort?: number;
@@ -28,7 +28,7 @@ interface StartWorkerOptions {
  */
 export async function startWorker<T>(
   WorkerModule: Type<T>,
-  options?: StartWorkerOptions
+  options?: StartWorkerOptions,
 ): Promise<void> {
   const healthPort = options?.healthPort ?? 8080;
   const logger = new Logger('Worker');

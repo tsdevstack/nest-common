@@ -1,6 +1,6 @@
 {
   "name": "@tsdevstack/nest-common",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Shared NestJS modules for tsdevstack microservices — auth, rate limiting, secrets, observability, and more",
   "type": "commonjs",
   "author": "tsdevstack",
@@ -50,10 +50,15 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1006.0",
     "@aws-sdk/client-secrets-manager": "^3.984.0",
+    "@aws-sdk/lib-storage": "^3.1006.0",
+    "@aws-sdk/s3-request-presigner": "^3.1006.0",
     "@azure/identity": "^4.13.0",
     "@azure/keyvault-secrets": "^4.10.0",
+    "@azure/storage-blob": "^12.31.0",
     "@google-cloud/secret-manager": "^6.1.1",
+    "@google-cloud/storage": "^7.19.0",
     "@nestjs/bullmq": "^11.0.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.0",

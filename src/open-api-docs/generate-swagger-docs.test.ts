@@ -37,12 +37,15 @@ rs.mock('@nestjs/core', () => ({
   NestFactory: { create: mockCreate },
 }));
 
-rs.mock('../bootstrap/create-app', () => ({
+rs.mock('../bootstrap/load-env-if-exists', () => ({
   loadEnvIfExists: mockLoadEnvIfExists,
 }));
 
-rs.mock('../utils/package-json', () => ({
+rs.mock('../utils/read-package-json', () => ({
   readPackageJson: mockReadPackageJson,
+}));
+
+rs.mock('../utils/title-case', () => ({
   titleCase: rs.fn((s: string) =>
     s
       .split('-')

@@ -4,7 +4,10 @@ export { AuthGuard } from './auth/auth.guard';
 export { Public, IS_PUBLIC_KEY } from './auth/public.decorator';
 export { PartnerApi, IS_PARTNER_API_KEY } from './auth/partner-api.decorator';
 export { Partner } from './auth/partner.decorator';
-export type { KongUser, AuthenticatedRequest } from './auth/auth-user.interface';
+export type {
+  KongUser,
+  AuthenticatedRequest,
+} from './auth/auth-user.interface';
 export { KongHeaders } from './auth/auth-user.interface';
 
 // Redis
@@ -25,11 +28,14 @@ export { EmailRateLimitModule } from './email-rate-limit/email-rate-limit.module
 export { EmailRateLimitGuard } from './email-rate-limit/email-rate-limit.guard';
 export { EmailRateLimitDecorator } from './email-rate-limit/email-rate-limit.decorator';
 
-
 // Secrets Management
 export { SecretsModule } from './secrets/secrets.module';
 export { SecretsService } from './secrets/secrets.service';
-export type { SecretsProvider, SecretsConfig, SecretsLoadResult } from './secrets/secrets.interface';
+export type {
+  SecretsProvider,
+  SecretsConfig,
+  SecretsLoadResult,
+} from './secrets/secrets.interface';
 
 // Service Client
 export { BaseServiceClient } from './service-client/base-service-client';
@@ -37,7 +43,10 @@ export type { ServiceClientConfig } from './service-client/base-service-client';
 export { filterForwardHeaders } from './service-client/filter-forward-headers';
 
 // Bootstrap
-export { startApp, loadEnvIfExists } from './bootstrap/create-app';
+export { createApp } from './bootstrap/create-app';
+export type { AppBootstrapOptions } from './bootstrap/create-app';
+export { loadEnvIfExists } from './bootstrap/load-env-if-exists';
+export { startApp } from './bootstrap/start-app';
 export { startWorker } from './bootstrap/start-worker';
 
 // OpenAPI Documentation
@@ -56,7 +65,10 @@ export { MetricsService } from './metrics/metrics.service';
 
 // Database - Prisma connection pooling
 export { createPrismaConnection } from './database/prisma-connection';
-export type { PrismaConnectionConfig, PrismaConnectionResult } from './database/prisma-connection';
+export type {
+  PrismaConnectionConfig,
+  PrismaConnectionResult,
+} from './database/prisma-connection';
 
 // Notifications (Phase 18)
 export { NotificationModule } from './notifications/notification.module';
@@ -68,3 +80,9 @@ export type { PushOptions } from './notifications/interfaces/push-options.interf
 // Workers & Background Jobs (Phase 20)
 export { BullConfigModule } from './bull/bull-config.module';
 export { SchedulerGuard } from './scheduler/scheduler.guard';
+
+// Storage (Phase 30)
+export * from './storage';
+
+// Messaging (Phase 31)
+export * from './messaging';

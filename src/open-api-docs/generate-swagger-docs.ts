@@ -3,9 +3,10 @@ import { createSwaggerDocument } from './create-swagger-document';
 import { OpenAPIObject } from '@nestjs/swagger';
 import { NestFactory } from '@nestjs/core';
 // import { SecretsService } from '../secrets/secrets.service';
-import { readPackageJson, titleCase } from '../utils/package-json';
+import { readPackageJson } from '../utils/read-package-json';
+import { titleCase } from '../utils/title-case';
 import { loadFrameworkConfig } from '../config/load-framework-config';
-import { loadEnvIfExists } from '../bootstrap/create-app';
+import { loadEnvIfExists } from '../bootstrap/load-env-if-exists';
 
 /**
  * Generate Swagger/OpenAPI documentation

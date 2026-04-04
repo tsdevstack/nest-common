@@ -44,11 +44,11 @@ rs.mock('http', () => ({
   createServer: mockCreateServer,
 }));
 
-rs.mock('./create-app', () => ({
+rs.mock('./load-env-if-exists', () => ({
   loadEnvIfExists: mockLoadEnvIfExists,
 }));
 
-rs.mock('../utils/package-json', () => ({
+rs.mock('../utils/read-package-json', () => ({
   readPackageJson: mockReadPackageJson,
 }));
 

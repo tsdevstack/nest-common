@@ -10,6 +10,8 @@ Shared NestJS modules for tsdevstack microservices. Provides auth, rate limiting
 - **Secrets Management** — Multi-provider secrets (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
 - **Observability** — Logging (Pino), metrics (Prometheus/OpenTelemetry), tracing (OTLP), health checks
 - **Database** — Prisma connection pooling with `pg` adapter and SSL support
+- **Object Storage** — Unified file storage (S3, GCS, Azure Blob, MinIO) with `@InjectStorage` decorator
+- **Async Messaging** — Inter-service event broadcasting via Redis Streams with `@OnMessage` decorator
 - **Notifications** — Email (Resend), SMS, and push notification service
 - **Background Jobs** — BullMQ configuration and scheduler guard
 - **Service Client** — Type-safe HTTP client for inter-service communication
@@ -90,6 +92,8 @@ export class UsersController {
 | `EmailRateLimitModule` | Dedicated email rate limiting |
 | `SecretsModule` | Multi-cloud secrets loading (GCP, AWS, Azure) |
 | `ObservabilityModule` | Logging, metrics, tracing, and health endpoints |
+| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob |
+| `MessagingModule` | Inter-service event broadcasting via Redis Streams |
 | `NotificationModule` | Email (Resend), SMS, and push notifications |
 | `BullConfigModule` | BullMQ queue configuration |
 
