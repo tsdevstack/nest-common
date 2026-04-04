@@ -86,14 +86,14 @@ export class UsersController {
 
 | Module | Description |
 |--------|-------------|
-| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators |
+| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators — [guide](https://tsdevstack.dev/authentication/overview) |
 | `RedisModule` | Redis connection with retry and health checks |
 | `RateLimitModule` | Redis-backed rate limiting with `@RateLimit()` decorator |
 | `EmailRateLimitModule` | Dedicated email rate limiting |
 | `SecretsModule` | Multi-cloud secrets loading (GCP, AWS, Azure) |
-| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints |
-| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob |
-| `MessagingModule` | Inter-service event broadcasting via Redis Streams |
+| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints — [guide](https://tsdevstack.dev/features/observability) |
+| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob — [guide](https://tsdevstack.dev/features/object-storage) |
+| `MessagingModule` | Inter-service event broadcasting via Redis Streams — [guide](https://tsdevstack.dev/features/async-messaging) |
 | `NotificationModule` | Email (Resend), SMS, and push notifications |
 | `BullConfigModule` | BullMQ queue configuration |
 
