@@ -110,6 +110,10 @@ export class UsersController {
 | `LoggerService` | Pino-based structured logging |
 | `MetricsService` | Custom Prometheus metrics |
 
+## Community
+
+Join the Discord: [discord.gg/2EMFkqc8QR](https://discord.gg/2EMFkqc8QR)
+
 ## License
 
 MIT
