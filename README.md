@@ -4,7 +4,7 @@ Shared NestJS modules for tsdevstack microservices. Provides auth, rate limiting
 
 ## Features
 
-- **Authentication** — Kong JWT validation guard with public/partner route decorators
+- **Authentication** — Kong JWT validation guard with public/partner route decorators, [OWASP-aligned](https://tsdevstack.dev/authentication/jwt-tokens#owasp-alignment) timing-safe token comparison
 - **Rate Limiting** — Redis-backed rate limiting with per-route configuration
 - **Email Rate Limiting** — Dedicated rate limiter for email-sending endpoints
 - **Secrets Management** — Multi-provider secrets (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
