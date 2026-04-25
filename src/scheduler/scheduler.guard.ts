@@ -14,9 +14,12 @@ import { SecretsService } from '../secrets/secrets.service';
  * Validates that requests come from the cloud scheduler, not external sources.
  *
  * Security model:
- * - GCP: Full OIDC token validation (implemented)
- * - AWS: EventBridge integration (not yet implemented - fails safe)
- * - Azure: Logic Apps integration (not yet implemented - fails safe)
+ * - GCP: Full OIDC token validation via Google's public certs
+ * - AWS: Shared-secret header (X-Job-Secret) injected by a Job Invoker Lambda
+ *        that reads the secret from Secrets Manager, since EventBridge cannot
+ *        make authenticated HTTP calls directly
+ * - Azure: Shared-secret header (X-Job-Secret) injected by the Container App
+ *          Job from an env var wired to Key Vault via Terraform
  * - Development/Local: Skips validation for easy local testing
  *
  * Combined with @ApiExcludeController(), provides two-layer security:
