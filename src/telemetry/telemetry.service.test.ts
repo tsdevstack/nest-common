@@ -71,7 +71,7 @@ rs.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
 }));
 
 rs.mock('@opentelemetry/resources', () => ({
-  Resource: class {},
+  resourceFromAttributes: rs.fn().mockReturnValue({}),
 }));
 
 rs.mock('@opentelemetry/semantic-conventions', () => ({

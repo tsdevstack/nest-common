@@ -1,5 +1,13 @@
-import { Injectable, Inject, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { Resource } from '@opentelemetry/resources';
+import {
+  Injectable,
+  Inject,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
+import {
+  resourceFromAttributes,
+  type Resource,
+} from '@opentelemetry/resources';
 import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
@@ -31,7 +39,8 @@ export class TelemetryService implements OnModuleInit, OnModuleDestroy {
     @Inject('TELEMETRY_MODULE_OPTIONS')
     options: TelemetryModuleOptions,
   ) {
-    this.serviceName = options.serviceName || process.env.SERVICE_NAME || 'unknown-service';
+    this.serviceName =
+      options.serviceName || process.env.SERVICE_NAME || 'unknown-service';
     this.serviceVersion = options.serviceVersion || '1.0.0';
     this.metricsEnabled = options.metrics !== false;
     this.tracingEnabled = options.tracing !== false;
@@ -42,7 +51,7 @@ export class TelemetryService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    const resource = new Resource({
+    const resource = resourceFromAttributes({
       [ATTR_SERVICE_NAME]: this.serviceName,
       [ATTR_SERVICE_VERSION]: this.serviceVersion,
     });
