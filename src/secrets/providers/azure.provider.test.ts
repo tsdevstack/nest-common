@@ -120,24 +120,31 @@ describe('AzureSecretsProvider', () => {
   });
 
   describe('get', () => {
-    it('should get service-scoped secret', async () => {
-      mockGetSecret.mockResolvedValue({ value: 'service-value' });
+    it('should get shared secret with a single lookup', async () => {
+      mockGetSecret.mockResolvedValue({ value: 'shared-value' });
 
-      const result = await provider.get('DATABASE_URL');
-
-      expect(result).toBe('service-value');
-      expect(mockGetSecret).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fall back to shared secret when service-scoped does not exist', async () => {
-      mockGetSecret
-        .mockRejectedValueOnce(new Error('Not found')) // service-scoped fails
-        .mockResolvedValueOnce({ value: 'shared-value' }); // shared succeeds
-
-      const result = await provider.get('API_KEY');
+      const result = await provider.get('SOME_SECRET');
 
       expect(result).toBe('shared-value');
+      expect(mockGetSecret).toHaveBeenCalledTimes(1);
+      expect(mockGetSecret).toHaveBeenCalledWith(
+        'testproject-shared-SOME-SECRET',
+      );
+    });
+
+    it('should fall back to service-scoped secret when shared does not exist', async () => {
+      mockGetSecret
+        .mockRejectedValueOnce(new Error('Not found')) // shared fails
+        .mockResolvedValueOnce({ value: 'service-value' }); // service-scoped succeeds
+
+      const result = await provider.get('SOME_SECRET');
+
+      expect(result).toBe('service-value');
       expect(mockGetSecret).toHaveBeenCalledTimes(2);
+      expect(mockGetSecret).toHaveBeenNthCalledWith(
+        2,
+        'testproject-test-service-SOME-SECRET',
+      );
     });
 
     it('should return null when neither scope exists', async () => {
@@ -165,7 +172,7 @@ describe('AzureSecretsProvider', () => {
 
       // Azure call should use hyphens instead of underscores
       expect(mockGetSecret).toHaveBeenCalledWith(
-        'testproject-test-service-DATABASE-URL',
+        'testproject-shared-DATABASE-URL',
       );
     });
 
@@ -319,7 +326,7 @@ describe('AzureSecretsProvider', () => {
   });
 
   describe('exists', () => {
-    it('should return true when service-scoped secret exists', async () => {
+    it('should return true when shared secret exists', async () => {
       mockGetSecret.mockResolvedValue({ value: 'value' });
 
       const result = await provider.exists('KEY');
@@ -328,10 +335,10 @@ describe('AzureSecretsProvider', () => {
       expect(mockGetSecret).toHaveBeenCalledTimes(1);
     });
 
-    it('should check shared scope if service-scoped does not exist', async () => {
+    it('should check service scope if shared does not exist', async () => {
       mockGetSecret
-        .mockRejectedValueOnce(new Error('Not found')) // service-scoped
-        .mockResolvedValueOnce({ value: 'shared-value' }); // shared
+        .mockRejectedValueOnce(new Error('Not found')) // shared
+        .mockResolvedValueOnce({ value: 'service-value' }); // service-scoped
 
       const result = await provider.exists('KEY');
 
@@ -362,7 +369,7 @@ describe('AzureSecretsProvider', () => {
       await provider.get('DATABASE_URL_MAIN');
 
       expect(mockGetSecret).toHaveBeenCalledWith(
-        'testproject-test-service-DATABASE-URL-MAIN',
+        'testproject-shared-DATABASE-URL-MAIN',
       );
     });
 

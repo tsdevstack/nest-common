@@ -64,29 +64,29 @@ describe('AWSSecretsProvider', () => {
   });
 
   describe('get', () => {
-    it('should get service-scoped secret', async () => {
+    it('should get shared secret with a single lookup', async () => {
       mockSend.mockResolvedValue({
-        SecretString: 'service-value',
+        SecretString: 'shared-value',
       });
 
-      const result = await provider.get('DATABASE_URL');
+      const result = await provider.get('SOME_SECRET');
 
-      expect(result).toBe('service-value');
+      expect(result).toBe('shared-value');
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
-    it('should fall back to shared secret when service-scoped does not exist', async () => {
+    it('should fall back to service-scoped secret when shared does not exist', async () => {
       mockSend
-        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // service-scoped fails
-        .mockResolvedValueOnce({ SecretString: 'shared-value' }); // shared succeeds
+        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // shared fails
+        .mockResolvedValueOnce({ SecretString: 'service-value' }); // service-scoped succeeds
 
-      const result = await provider.get('API_KEY');
+      const result = await provider.get('SOME_SECRET');
 
-      expect(result).toBe('shared-value');
+      expect(result).toBe('service-value');
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
-    it('should return null when neither service-scoped nor shared exists', async () => {
+    it('should return null when neither shared nor service-scoped exists', async () => {
       mockSend.mockRejectedValue(new Error('ResourceNotFoundException'));
 
       const result = await provider.get('NONEXISTENT');
@@ -116,16 +116,16 @@ describe('AWSSecretsProvider', () => {
 
       expect(result1).toBeNull();
       expect(result2).toBeNull();
-      expect(mockSend).toHaveBeenCalledTimes(4); // 2 attempts per call (service + shared)
+      expect(mockSend).toHaveBeenCalledTimes(4); // 2 attempts per call (shared + service)
     });
   });
 
   describe('set', () => {
     it('should create new secret when it does not exist', async () => {
-      // Mock exists check (service-scoped and shared both fail)
+      // Mock exists check (shared and service-scoped both fail)
       mockSend
-        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // service exists check
         .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // shared exists check
+        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // service exists check
         .mockResolvedValueOnce({}); // create secret
 
       await provider.set('NEW_KEY', 'new-value');
@@ -134,9 +134,9 @@ describe('AWSSecretsProvider', () => {
     });
 
     it('should update existing secret', async () => {
-      // Mock exists check (service-scoped succeeds)
+      // Mock exists check (shared succeeds)
       mockSend
-        .mockResolvedValueOnce({ Name: 'existing-secret' }) // service exists check
+        .mockResolvedValueOnce({ Name: 'existing-secret' }) // shared exists check
         .mockResolvedValueOnce({}); // update secret
 
       await provider.set('EXISTING_KEY', 'updated-value');
@@ -271,7 +271,7 @@ describe('AWSSecretsProvider', () => {
   });
 
   describe('exists', () => {
-    it('should return true when service-scoped secret exists', async () => {
+    it('should return true when shared secret exists', async () => {
       mockSend.mockResolvedValue({ Name: 'secret-name' });
 
       const result = await provider.exists('KEY');
@@ -280,10 +280,10 @@ describe('AWSSecretsProvider', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
-    it('should check shared scope if service-scoped does not exist', async () => {
+    it('should check service scope if shared does not exist', async () => {
       mockSend
-        .mockRejectedValueOnce(new Error('Not found')) // service-scoped
-        .mockResolvedValueOnce({ Name: 'shared-secret' }); // shared
+        .mockRejectedValueOnce(new Error('Not found')) // shared
+        .mockResolvedValueOnce({ Name: 'service-secret' }); // service-scoped
 
       const result = await provider.exists('KEY');
 

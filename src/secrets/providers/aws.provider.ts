@@ -37,7 +37,7 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Get secret with service-scoped → shared fallback and caching
+   * Get secret with shared → service-scoped fallback and caching
    */
   async get(key: string): Promise<string | null> {
     // Check cache first
@@ -46,14 +46,17 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
       return cached;
     }
 
-    // Try service-scoped secret first
-    const serviceScopedName = this.buildSecretName(key, this.serviceName);
-    let value = await this.fetchSecretFromAWS(serviceScopedName);
+    // Shared scope first: every runtime-read secret lives in shared (the
+    // only service-scoped secret, DATABASE_URL, is injected as an env var
+    // at deploy time and never read here). Scoped-first meant a
+    // guaranteed-404 round-trip on every cache-miss lookup.
+    const sharedScopedName = this.buildSecretName(key, 'shared');
+    let value = await this.fetchSecretFromAWS(sharedScopedName);
 
-    // Fall back to shared scope if service-scoped doesn't exist
+    // Fall back to service scope for explicitly scoped secrets
     if (value === null) {
-      const sharedScopedName = this.buildSecretName(key, 'shared');
-      value = await this.fetchSecretFromAWS(sharedScopedName);
+      const serviceScopedName = this.buildSecretName(key, this.serviceName);
+      value = await this.fetchSecretFromAWS(serviceScopedName);
     }
 
     // Cache the result (including null to avoid repeated lookups)
@@ -178,27 +181,27 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Check if a secret exists (checks both service-scoped and shared)
+   * Check if a secret exists (checks both shared and service-scoped)
    */
   async exists(key: string): Promise<boolean> {
-    // Check service-scoped first
-    const serviceScopedName = this.buildSecretName(key, this.serviceName);
-
-    try {
-      await this.client.send(
-        new DescribeSecretCommand({ SecretId: serviceScopedName }),
-      );
-      return true;
-    } catch {
-      // Secret doesn't exist, check shared scope
-    }
-
-    // Check shared scope
+    // Check shared scope first (same ordering rationale as get())
     const sharedScopedName = this.buildSecretName(key, 'shared');
 
     try {
       await this.client.send(
         new DescribeSecretCommand({ SecretId: sharedScopedName }),
+      );
+      return true;
+    } catch {
+      // Secret doesn't exist, check service scope
+    }
+
+    // Check service scope
+    const serviceScopedName = this.buildSecretName(key, this.serviceName);
+
+    try {
+      await this.client.send(
+        new DescribeSecretCommand({ SecretId: serviceScopedName }),
       );
       return true;
     } catch {
@@ -239,7 +242,9 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
 
     // Fallback: just return the remaining part after first dash
     const firstDashIndex = withoutProject.indexOf('-');
-    return firstDashIndex >= 0 ? withoutProject.substring(firstDashIndex + 1) : withoutProject;
+    return firstDashIndex >= 0
+      ? withoutProject.substring(firstDashIndex + 1)
+      : withoutProject;
   }
 
   /**
@@ -261,7 +266,9 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
    * Build AWS tags from metadata
    * AWS supports up to 50 tags per secret
    */
-  private buildTags(metadata?: Record<string, string>): Array<{ Key: string; Value: string }> {
+  private buildTags(
+    metadata?: Record<string, string>,
+  ): Array<{ Key: string; Value: string }> {
     const tags: Array<{ Key: string; Value: string }> = [
       { Key: 'project-name', Value: this.projectName },
       { Key: 'service-name', Value: this.serviceName },

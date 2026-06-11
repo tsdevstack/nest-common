@@ -73,29 +73,35 @@ describe('GCPSecretsProvider', () => {
   });
 
   describe('get', () => {
-    it('should get service-scoped secret', async () => {
+    it('should get shared secret with a single lookup', async () => {
       mockAccessSecretVersion.mockResolvedValue([
-        { payload: { data: Buffer.from('service-value') } },
+        { payload: { data: Buffer.from('shared-value') } },
       ]);
 
-      const result = await provider.get('DATABASE_URL');
-
-      expect(result).toBe('service-value');
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fall back to shared secret when service-scoped does not exist', async () => {
-      mockAccessSecretVersion
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // service-scoped fails
-        .mockResolvedValueOnce([
-          { payload: { data: Buffer.from('shared-value') } },
-        ]); // shared succeeds
-
-      // Note: Don't use 'API_KEY' - it has special handling that bypasses service-scoped lookup
       const result = await provider.get('SOME_SECRET');
 
       expect(result).toBe('shared-value');
+      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(1);
+      expect(mockAccessSecretVersion).toHaveBeenCalledWith({
+        name: 'projects/gcp-project-123/secrets/testproject-shared-SOME_SECRET/versions/latest',
+      });
+    });
+
+    it('should fall back to service-scoped secret when shared does not exist', async () => {
+      mockAccessSecretVersion
+        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared fails
+        .mockResolvedValueOnce([
+          { payload: { data: Buffer.from('service-value') } },
+        ]); // service-scoped succeeds
+
+      // Note: Don't use 'API_KEY' - it has special handling that bypasses the fallback chain
+      const result = await provider.get('SOME_SECRET');
+
+      expect(result).toBe('service-value');
       expect(mockAccessSecretVersion).toHaveBeenCalledTimes(2);
+      expect(mockAccessSecretVersion).toHaveBeenNthCalledWith(2, {
+        name: 'projects/gcp-project-123/secrets/testproject-test-service-SOME_SECRET/versions/latest',
+      });
     });
 
     it('should return null when neither scope exists', async () => {
@@ -130,8 +136,8 @@ describe('GCPSecretsProvider', () => {
   describe('set', () => {
     it('should create new secret when it does not exist', async () => {
       mockGetSecret
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // service exists check
-        .mockRejectedValueOnce(new Error('NOT_FOUND')); // shared exists check
+        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared exists check
+        .mockRejectedValueOnce(new Error('NOT_FOUND')); // service exists check
       mockCreateSecret.mockResolvedValue([{}]);
       mockAddSecretVersion.mockResolvedValue([{}]);
 
@@ -236,24 +242,30 @@ describe('GCPSecretsProvider', () => {
   });
 
   describe('exists', () => {
-    it('should return true when service-scoped secret exists', async () => {
+    it('should return true when shared secret exists', async () => {
       mockGetSecret.mockResolvedValue([{ name: 'secret-name' }]);
 
       const result = await provider.exists('KEY');
 
       expect(result).toBe(true);
       expect(mockGetSecret).toHaveBeenCalledTimes(1);
+      expect(mockGetSecret).toHaveBeenCalledWith({
+        name: 'projects/gcp-project-123/secrets/testproject-shared-KEY',
+      });
     });
 
-    it('should check shared scope if service-scoped does not exist', async () => {
+    it('should check service scope if shared does not exist', async () => {
       mockGetSecret
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // service-scoped
-        .mockResolvedValueOnce([{ name: 'shared-secret' }]); // shared
+        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared
+        .mockResolvedValueOnce([{ name: 'service-secret' }]); // service-scoped
 
       const result = await provider.exists('KEY');
 
       expect(result).toBe(true);
       expect(mockGetSecret).toHaveBeenCalledTimes(2);
+      expect(mockGetSecret).toHaveBeenNthCalledWith(2, {
+        name: 'projects/gcp-project-123/secrets/testproject-test-service-KEY',
+      });
     });
 
     it('should return false when secret does not exist', async () => {
