@@ -1,11 +1,11 @@
 {
   "name": "@tsdevstack/nest-common",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shared NestJS modules for tsdevstack microservices — auth, rate limiting, secrets, observability, and more",
   "type": "commonjs",
   "author": "tsdevstack",
   "private": false,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/tsdevstack/nest-common.git"
@@ -39,7 +39,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "scripts": {
     "build": "rslib build",
