@@ -33,7 +33,8 @@ export function loadEnvIfExists(): void {
       const hasSecretsProvider = envContent.includes('SECRETS_PROVIDER=');
 
       if (hasSecretsProvider) {
-        dotenv.config({ path: envPath });
+        // quiet: dotenv 17 logs a startup tip by default
+        dotenv.config({ path: envPath, quiet: true });
         return;
       }
       // Otherwise, continue searching up the directory tree

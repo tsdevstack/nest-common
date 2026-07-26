@@ -105,6 +105,7 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to set secret ${secretName} in AWS: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -129,6 +130,7 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to remove secret ${secretName} from AWS: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -176,6 +178,7 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to list secrets from AWS: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }

@@ -1,8 +1,8 @@
-import * as fs from "fs";
-import * as path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
-import { SecretsProvider } from "../secrets.interface";
+import * as fs from 'fs';
+import * as path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { SecretsProvider } from '../secrets.interface';
 
 const execAsync = promisify(exec);
 
@@ -49,8 +49,8 @@ export class LocalSecretsProvider implements SecretsProvider {
   private serviceName?: string;
 
   constructor(
-    secretsFilePath: string = ".secrets.local.json",
-    cacheTtl: number = 60000 // 1 minute default
+    secretsFilePath: string = '.secrets.local.json',
+    cacheTtl: number = 60000, // 1 minute default
   ) {
     // Find the project root (where .secrets.local.json should be)
     this.secretsFilePath = this.findProjectRoot(secretsFilePath);
@@ -121,18 +121,18 @@ export class LocalSecretsProvider implements SecretsProvider {
       if (!fs.existsSync(this.secretsFilePath)) {
         throw new Error(
           `Secrets file not found: ${this.secretsFilePath}\n\n` +
-            "Please create .secrets.local.json in your project root.\n" +
-            "See docs/secrets-management-strategy.md for details."
+            'Please create .secrets.local.json in your project root.\n' +
+            'See docs/secrets-management-strategy.md for details.',
         );
       }
 
-      const fileContent = fs.readFileSync(this.secretsFilePath, "utf-8");
+      const fileContent = fs.readFileSync(this.secretsFilePath, 'utf-8');
       const secrets = JSON.parse(fileContent);
 
       // Validate structure
-      if (typeof secrets !== "object" || secrets === null) {
+      if (typeof secrets !== 'object' || secrets === null) {
         throw new Error(
-          `Invalid secrets file format. Expected object, got ${typeof secrets}`
+          `Invalid secrets file format. Expected object, got ${typeof secrets}`,
         );
       }
 
@@ -141,7 +141,8 @@ export class LocalSecretsProvider implements SecretsProvider {
       if (error instanceof SyntaxError) {
         throw new Error(
           `Failed to parse secrets file: ${this.secretsFilePath}\n` +
-            `JSON syntax error: ${error.message}`
+            `JSON syntax error: ${error.message}`,
+          { cause: error },
         );
       }
       throw error;
@@ -165,9 +166,9 @@ export class LocalSecretsProvider implements SecretsProvider {
       return {};
     }
 
-    if (typeof serviceConfig !== "object") {
+    if (typeof serviceConfig !== 'object') {
       throw new Error(
-        `Invalid secrets format for "${serviceName}". Expected object, got ${typeof serviceConfig}`
+        `Invalid secrets format for "${serviceName}". Expected object, got ${typeof serviceConfig}`,
       );
     }
 
@@ -175,11 +176,11 @@ export class LocalSecretsProvider implements SecretsProvider {
 
     // Load all service values - all references are already resolved
     for (const [key, value] of Object.entries(serviceConfig)) {
-      if (typeof value === "string") {
+      if (typeof value === 'string') {
         result[key] = value;
       } else {
         throw new Error(
-          `Invalid value for "${key}" in "${serviceName}". Expected string, got ${typeof value}`
+          `Invalid value for "${key}" in "${serviceName}". Expected string, got ${typeof value}`,
         );
       }
     }
@@ -191,7 +192,7 @@ export class LocalSecretsProvider implements SecretsProvider {
    * Get provider name
    */
   getName(): string {
-    return "local";
+    return 'local';
   }
 
   /**
@@ -236,9 +237,9 @@ export class LocalSecretsProvider implements SecretsProvider {
     if (!value) {
       throw new Error(
         `Secret "${key}" not found. ` +
-        (this.serviceName
-          ? `Searched in service "${this.serviceName}" and top-level secrets.`
-          : 'Searched in top-level secrets only. Use setServiceName() to search in a specific service.')
+          (this.serviceName
+            ? `Searched in service "${this.serviceName}" and top-level secrets.`
+            : 'Searched in top-level secrets only. Use setServiceName() to search in a specific service.'),
       );
     }
 
@@ -283,7 +284,7 @@ export class LocalSecretsProvider implements SecretsProvider {
     fs.writeFileSync(
       userSecretsPath,
       JSON.stringify(userSecrets, null, 2),
-      'utf-8'
+      'utf-8',
     );
 
     // Trigger regeneration
@@ -294,7 +295,7 @@ export class LocalSecretsProvider implements SecretsProvider {
     } catch {
       throw new Error(
         `Failed to regenerate secrets after setting "${key}". ` +
-        `Manual regeneration may be required: npx tsdevstack generate-secrets`
+          `Manual regeneration may be required: npx tsdevstack generate-secrets`,
       );
     }
 
@@ -313,7 +314,7 @@ export class LocalSecretsProvider implements SecretsProvider {
     // Read .secrets.user.json
     if (!fs.existsSync(userSecretsPath)) {
       throw new Error(
-        `Cannot delete secret: .secrets.user.json not found at ${userSecretsPath}`
+        `Cannot delete secret: .secrets.user.json not found at ${userSecretsPath}`,
       );
     }
 
@@ -333,7 +334,7 @@ export class LocalSecretsProvider implements SecretsProvider {
       fs.writeFileSync(
         userSecretsPath,
         JSON.stringify(userSecrets, null, 2),
-        'utf-8'
+        'utf-8',
       );
 
       // Trigger regeneration
@@ -344,7 +345,7 @@ export class LocalSecretsProvider implements SecretsProvider {
       } catch {
         throw new Error(
           `Failed to regenerate secrets after deleting "${key}". ` +
-          `Manual regeneration may be required: npx tsdevstack generate-secrets`
+            `Manual regeneration may be required: npx tsdevstack generate-secrets`,
         );
       }
 

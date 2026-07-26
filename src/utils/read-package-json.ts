@@ -31,6 +31,7 @@ export function readPackageJson(): PackageJson {
   } catch (error) {
     throw new Error(
       `Failed to parse package.json: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 }

@@ -107,6 +107,7 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to set secret ${secretName} in Azure: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -127,6 +128,7 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to remove secret ${secretName} from Azure: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -151,6 +153,7 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to list secrets from Azure: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }

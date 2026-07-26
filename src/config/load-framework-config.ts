@@ -77,6 +77,7 @@ export function loadFrameworkConfig(
     throw new Error(
       `Failed to read framework configuration: ${configPath}\n` +
         `Error: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
 

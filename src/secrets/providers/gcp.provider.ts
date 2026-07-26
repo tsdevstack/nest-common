@@ -56,7 +56,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
       return cached;
     }
 
-    let value: string | null = null;
+    let value: string | null;
 
     // API_KEY is a special case: always resolve to {SERVICE_NAME}_API_KEY in shared scope
     // e.g., auth-service asking for API_KEY → AUTH_SERVICE_API_KEY in shared
@@ -133,6 +133,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to set secret ${secretName} in GCP: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -155,6 +156,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to remove secret ${secretName} from GCP: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
@@ -188,6 +190,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to list secrets from GCP: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
       );
     }
   }
