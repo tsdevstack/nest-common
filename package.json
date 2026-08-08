@@ -1,6 +1,6 @@
 {
   "name": "@tsdevstack/nest-common",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Shared NestJS modules for tsdevstack microservices — auth, rate limiting, secrets, observability, and more",
   "type": "commonjs",
   "author": "tsdevstack",
@@ -48,6 +48,7 @@
     "format": "prettier --write .",
     "lint": "eslint .",
     "test": "rstest run",
+    "test:redis": "docker run --rm -d --name nest-common-redis-itest -p 6399:6379 redis:7-alpine >/dev/null && sleep 1 && REDIS_TEST_URL=redis://127.0.0.1:6399 rstest run; docker rm -f nest-common-redis-itest >/dev/null 2>&1",
     "tsc": "tsc --noEmit"
   },
   "dependencies": {

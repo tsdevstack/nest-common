@@ -12,11 +12,15 @@ import {
   DEFAULT_BLOCK_TIME_MS,
   DEFAULT_CLAIM_MIN_IDLE_MS,
   DEFAULT_MAX_RETRIES,
+  DEFAULT_MAX_LEN,
   DEFAULT_READ_COUNT,
   DEFAULT_CLAIM_CHECK_INTERVAL_MS,
+  DEFAULT_REAP_INTERVAL_MS,
+  DEFAULT_REAP_IDLE_MS,
 } from './messaging.constants';
 import { parseStreamEntry } from './parse-stream-entry';
 import { claimStuckMessages } from './claim-stuck-messages';
+import { reapIdleConsumers } from './reap-idle-consumers';
 
 export interface ConsumerLoopOptions {
   /** The ioredis client (dedicated connection with maxRetriesPerRequest: null) */
@@ -41,6 +45,8 @@ export interface ConsumerLoopOptions {
   claimMinIdleMs?: number;
   /** Max delivery attempts before DLQ */
   maxRetries?: number;
+  /** Approximate MAXLEN trim applied to the DLQ stream */
+  maxLen?: number;
 }
 
 export function startConsumerLoop(options: ConsumerLoopOptions): {
@@ -58,11 +64,13 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
     blockTimeMs = DEFAULT_BLOCK_TIME_MS,
     claimMinIdleMs = DEFAULT_CLAIM_MIN_IDLE_MS,
     maxRetries = DEFAULT_MAX_RETRIES,
+    maxLen = DEFAULT_MAX_LEN,
   } = options;
 
   let running = true;
   let resolveStop: (() => void) | null = null;
   let lastClaimCheck = Date.now();
+  let lastReapCheck = Date.now();
 
   const loop = async (): Promise<void> => {
     while (running) {
@@ -124,6 +132,20 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
             logger,
             claimMinIdleMs,
             maxRetries,
+            maxLen,
+          );
+        }
+
+        // Step 3: Periodically remove consumers left behind by dead replicas
+        if (Date.now() - lastReapCheck >= DEFAULT_REAP_INTERVAL_MS) {
+          lastReapCheck = Date.now();
+          await reapIdleConsumers(
+            redis,
+            streamKey,
+            groupName,
+            consumerName,
+            logger,
+            DEFAULT_REAP_IDLE_MS,
           );
         }
       } catch (loopError) {

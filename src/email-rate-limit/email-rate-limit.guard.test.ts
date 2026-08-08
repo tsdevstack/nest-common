@@ -12,6 +12,7 @@ describe('EmailRateLimitGuard', () => {
   let mockRedisClient: {
     incr: ReturnType<typeof rs.fn>;
     expire: ReturnType<typeof rs.fn>;
+    multi: ReturnType<typeof rs.fn>;
   };
 
   const createMockContext = (
@@ -32,7 +33,28 @@ describe('EmailRateLimitGuard', () => {
     mockRedisClient = {
       incr: rs.fn().mockResolvedValue(1),
       expire: rs.fn().mockResolvedValue(1),
+      multi: rs.fn(),
     };
+
+    // The guard batches INCR + EXPIRE in a MULTI — see rate-limit.guard.test.ts
+    mockRedisClient.multi.mockImplementation(() => {
+      let incrResult: Promise<number> = Promise.resolve(0);
+      const chain = {
+        incr: (key: string) => {
+          incrResult = mockRedisClient.incr(key) as Promise<number>;
+          return chain;
+        },
+        expire: (key: string, ttl: number) => {
+          mockRedisClient.expire(key, ttl);
+          return chain;
+        },
+        exec: async () => [
+          [null, await incrResult],
+          [null, 1],
+        ],
+      };
+      return chain;
+    });
 
     mockRedisService = {
       getClient: rs.fn().mockReturnValue(mockRedisClient),
@@ -70,16 +92,39 @@ describe('EmailRateLimitGuard', () => {
       expect(result).toBe(true);
     });
 
-    it('should normalize email to lowercase and trim', async () => {
+    it('should never put the plaintext address in the key', async () => {
+      rs.spyOn(reflector, 'get').mockReturnValue({ maxRequests: 3 });
+
+      await guard.canActivate(createMockContext({ email: 'user@example.com' }));
+
+      const key = mockRedisClient.incr.mock.calls[0][0] as string;
+      expect(key).not.toContain('user@example.com');
+      expect(key).not.toContain('@');
+      expect(key).toMatch(/^email_rate_limit:[0-9a-f]{32}:\d+$/);
+    });
+
+    it('should map casing and whitespace variants to the same counter', async () => {
       rs.spyOn(reflector, 'get').mockReturnValue({ maxRequests: 3 });
 
       await guard.canActivate(
         createMockContext({ email: '  User@Example.COM  ' }),
       );
+      await guard.canActivate(createMockContext({ email: 'user@example.com' }));
 
-      expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringContaining('user@example.com'),
-      );
+      const [firstKey] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [secondKey] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(firstKey).toBe(secondKey);
+    });
+
+    it('should map different addresses to different counters', async () => {
+      rs.spyOn(reflector, 'get').mockReturnValue({ maxRequests: 3 });
+
+      await guard.canActivate(createMockContext({ email: 'a@example.com' }));
+      await guard.canActivate(createMockContext({ email: 'b@example.com' }));
+
+      const [firstKey] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [secondKey] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(firstKey).not.toBe(secondKey);
     });
 
     it('should use custom emailField', async () => {
@@ -93,7 +138,7 @@ describe('EmailRateLimitGuard', () => {
       );
 
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringContaining('test@test.com'),
+        expect.stringMatching(/^email_rate_limit:[0-9a-f]{32}:\d+$/),
       );
     });
   });

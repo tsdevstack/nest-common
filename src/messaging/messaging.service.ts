@@ -1,10 +1,13 @@
 import { Injectable, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
+import { hostname } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import type Redis from 'ioredis';
 import { RedisService } from '../redis/redis.service';
 import {
   MESSAGING_OPTIONS_TOKEN,
   MESSAGING_CONSUMER_REDIS_TOKEN,
   DEFAULT_MAX_LEN,
+  DEFAULT_MAX_PAYLOAD_BYTES,
   SHUTDOWN_TIMEOUT_MS,
 } from './messaging.constants';
 import type {
@@ -15,6 +18,7 @@ import type {
 import { MessagingError, MessagingErrorCode } from './messaging.error';
 import { ensureConsumerGroup } from './ensure-consumer-group';
 import { startConsumerLoop } from './consumer-loop';
+import { deleteConsumerIfEmpty } from './delete-consumer-if-empty';
 
 @Injectable()
 export class MessagingService implements OnModuleDestroy {
@@ -23,6 +27,13 @@ export class MessagingService implements OnModuleDestroy {
   private readonly stopFns: Array<() => Promise<void>> = [];
   private readonly prefix: string;
   private started = false;
+
+  /** Consumer registrations to clean up on shutdown */
+  private readonly registrations: Array<{
+    streamKey: string;
+    groupName: string;
+    consumerName: string;
+  }> = [];
 
   constructor(
     private readonly redisService: RedisService,
@@ -58,7 +69,21 @@ export class MessagingService implements OnModuleDestroy {
       return;
     }
 
-    const consumerName = `${this.options.consumerGroup}:${process.pid}`;
+    // Consumer names must be unique per running instance. Two instances
+    // sharing a name share a pending list, which lets one reclaim a message
+    // another is still working on.
+    //
+    // PID alone is not unique: the image runs `dumb-init node`, so every
+    // container reports the same low PID. hostname() is unique under Docker,
+    // but whether every managed runtime sets a distinct one is not something
+    // this code should assume, so a per-process random id is what actually
+    // guarantees uniqueness. hostname and PID stay in the name because they
+    // make a consumer traceable back to a container when debugging.
+    //
+    // Stale names are cleaned up automatically (see reapIdleConsumers), so a
+    // fresh id per start does not accumulate.
+    const instanceId = randomBytes(4).toString('hex');
+    const consumerName = `${this.options.consumerGroup}:${hostname()}:${process.pid}:${instanceId}`;
 
     for (const topic of topics) {
       const streamKey = `${this.prefix}:messaging:${topic}`;
@@ -95,9 +120,11 @@ export class MessagingService implements OnModuleDestroy {
         blockTimeMs: this.options.blockTimeMs,
         claimMinIdleMs: this.options.claimMinIdleMs,
         maxRetries: this.options.maxRetries,
+        maxLen: this.options.maxLen,
       });
 
       this.stopFns.push(stop);
+      this.registrations.push({ streamKey, groupName, consumerName });
       this.logger.log(`Consuming topic "${topic}" as group "${groupName}"`);
     }
   }
@@ -109,6 +136,29 @@ export class MessagingService implements OnModuleDestroy {
   async publish(topic: string, data: Record<string, unknown>): Promise<string> {
     const streamKey = `${this.prefix}:messaging:${topic}`;
     const maxLen = this.options.maxLen ?? DEFAULT_MAX_LEN;
+    const maxPayloadBytes =
+      this.options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
+
+    const serialized = JSON.stringify(data);
+    const payloadBytes = Buffer.byteLength(serialized, 'utf8');
+
+    // MAXLEN bounds entry count, not bytes — the stream's real memory ceiling
+    // is maxLen * payload size, so an oversized payload multiplies into an OOM
+    // on a noeviction instance.
+    //
+    // Warn rather than throw: publishing a large payload works today, and
+    // turning that into a runtime failure on a patch upgrade would break
+    // running services with no warning. This gives operators a signal in
+    // their logs first; a future release turns it into an error.
+    if (payloadBytes > maxPayloadBytes) {
+      this.logger.warn(
+        `Message payload for topic "${topic}" is ${payloadBytes} bytes, ` +
+          `over the ${maxPayloadBytes} byte limit. A future release will ` +
+          `reject this. Publish a reference (for example an object storage ` +
+          `key) instead of the payload itself, or raise maxPayloadBytes if ` +
+          `this size is expected.`,
+      );
+    }
 
     try {
       const entryId = await this.redisService
@@ -120,7 +170,7 @@ export class MessagingService implements OnModuleDestroy {
           String(maxLen),
           '*',
           'data',
-          JSON.stringify(data),
+          serialized,
         );
 
       if (!entryId) {
@@ -161,6 +211,19 @@ export class MessagingService implements OnModuleDestroy {
         }, SHUTDOWN_TIMEOUT_MS),
       ),
     ]);
+
+    // Deregister this instance's consumers so they don't accumulate in the
+    // group. Runs after the loops have stopped, and skips any consumer still
+    // holding pending messages so nothing is dropped.
+    for (const { streamKey, groupName, consumerName } of this.registrations) {
+      await deleteConsumerIfEmpty(
+        this.consumerRedis,
+        streamKey,
+        groupName,
+        consumerName,
+        this.logger,
+      );
+    }
 
     // Disconnect the dedicated consumer connection
     this.consumerRedis.disconnect();

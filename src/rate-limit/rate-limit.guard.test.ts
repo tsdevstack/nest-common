@@ -12,6 +12,7 @@ describe('RateLimitGuard', () => {
   let mockRedisClient: {
     incr: ReturnType<typeof rs.fn>;
     expire: ReturnType<typeof rs.fn>;
+    multi: ReturnType<typeof rs.fn>;
   };
 
   const createMockContext = (
@@ -38,7 +39,30 @@ describe('RateLimitGuard', () => {
     mockRedisClient = {
       incr: rs.fn().mockResolvedValue(1),
       expire: rs.fn().mockResolvedValue(1),
+      multi: rs.fn(),
     };
+
+    // The guard batches INCR + EXPIRE in a MULTI. This chainable stub records
+    // both on the individual spies (so per-test mockResolvedValue still drives
+    // the counter) and returns them in exec()'s [err, result] tuple shape.
+    mockRedisClient.multi.mockImplementation(() => {
+      let incrResult: Promise<number> = Promise.resolve(0);
+      const chain = {
+        incr: (key: string) => {
+          incrResult = mockRedisClient.incr(key) as Promise<number>;
+          return chain;
+        },
+        expire: (key: string, ttl: number) => {
+          mockRedisClient.expire(key, ttl);
+          return chain;
+        },
+        exec: async () => [
+          [null, await incrResult],
+          [null, 1],
+        ],
+      };
+      return chain;
+    });
 
     mockRedisService = {
       getClient: rs.fn().mockReturnValue(mockRedisClient),
@@ -93,7 +117,10 @@ describe('RateLimitGuard', () => {
       expect(mockRedisClient.expire).toHaveBeenCalled();
     });
 
-    it('should not set expiry on subsequent requests', async () => {
+    it('should set expiry on subsequent requests too', async () => {
+      // Applying the TTL unconditionally is what stops the key leaking when a
+      // process dies between INCR and EXPIRE. It cannot slide the window: the
+      // key embeds the window number, so a given key always covers one bucket.
       rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
         maxRequests: 10,
         windowMs: 60000,
@@ -102,7 +129,21 @@ describe('RateLimitGuard', () => {
 
       await guard.canActivate(createMockContext());
 
-      expect(mockRedisClient.expire).not.toHaveBeenCalled();
+      expect(mockRedisClient.expire).toHaveBeenCalledWith(
+        expect.stringContaining('rate_limit:'),
+        60,
+      );
+    });
+
+    it('should batch INCR and EXPIRE into a single MULTI', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        windowMs: 60000,
+      });
+
+      await guard.canActivate(createMockContext());
+
+      expect(mockRedisClient.multi).toHaveBeenCalledTimes(1);
     });
 
     it('should throw 429 when limit exceeded', async () => {

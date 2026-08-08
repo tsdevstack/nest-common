@@ -7,10 +7,12 @@ export interface MessagingModuleOptions {
   maxRetries?: number;
   /** XREADGROUP block time in milliseconds (default: 5000) */
   blockTimeMs?: number;
-  /** Stream MAXLEN approximate trim on publish (default: 10000) */
+  /** Stream MAXLEN approximate trim, applied on publish and to the DLQ (default: 10000) */
   maxLen?: number;
   /** Reclaim stuck messages after this idle time in ms (default: 60000) */
   claimMinIdleMs?: number;
+  /** Serialized payload size that triggers a warning, in bytes (default: 262144) */
+  maxPayloadBytes?: number;
 }
 
 export interface IncomingMessage {

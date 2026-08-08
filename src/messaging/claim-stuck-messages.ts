@@ -8,7 +8,7 @@
 import type { Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
 import type { IncomingMessage } from './messaging.interface';
-import { DEFAULT_READ_COUNT } from './messaging.constants';
+import { DEFAULT_READ_COUNT, DEFAULT_MAX_LEN } from './messaging.constants';
 import { parseStreamEntry } from './parse-stream-entry';
 
 export async function claimStuckMessages(
@@ -22,6 +22,7 @@ export async function claimStuckMessages(
   logger: Logger,
   claimMinIdleMs: number,
   maxRetries: number,
+  dlqMaxLen: number = DEFAULT_MAX_LEN,
 ): Promise<void> {
   try {
     // Get pending messages for this group
@@ -53,8 +54,14 @@ export async function claimStuckMessages(
                 break;
               }
             }
+            // MAXLEN ~ matches the publish path — an uncapped DLQ grows
+            // forever, and Redis runs noeviction, so it would eventually
+            // OOM the shared instance (BullMQ + rate limiting + messaging).
             await redis.xadd(
               dlqStreamKey,
+              'MAXLEN',
+              '~',
+              String(dlqMaxLen),
               '*',
               'data',
               dataStr,

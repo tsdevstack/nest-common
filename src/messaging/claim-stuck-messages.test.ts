@@ -82,6 +82,9 @@ describe('claimStuckMessages', () => {
 
     expect(mockRedis.xadd).toHaveBeenCalledWith(
       'stream-key:dlq',
+      'MAXLEN',
+      '~',
+      '10000',
       '*',
       'data',
       '{"failed":"msg"}',
@@ -99,6 +102,41 @@ describe('claimStuckMessages', () => {
     );
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('moved to DLQ'),
+    );
+  });
+
+  it('should apply a custom DLQ MAXLEN when provided', async () => {
+    mockRedis.xpending.mockResolvedValue([['1-0', 'consumer-1', 120000, 3]]);
+    mockRedis.xrange.mockResolvedValue([['1-0', ['data', '{"failed":"msg"}']]]);
+
+    await claimStuckMessages(
+      mockRedis as never,
+      'stream-key',
+      'group-name',
+      'consumer-1',
+      'topic',
+      'stream-key:dlq',
+      mockHandler,
+      mockLogger as never,
+      60000,
+      3,
+      500,
+    );
+
+    expect(mockRedis.xadd).toHaveBeenCalledWith(
+      'stream-key:dlq',
+      'MAXLEN',
+      '~',
+      '500',
+      '*',
+      'data',
+      '{"failed":"msg"}',
+      'originalId',
+      '1-0',
+      'deliveryCount',
+      '3',
+      'topic',
+      'topic',
     );
   });
 
