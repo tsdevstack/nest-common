@@ -36,7 +36,7 @@ export interface KongUser {
 /**
  * Express Request with Kong authentication populated.
  *
- * After KongAuthGuard processes the request, either `user` (JWT auth)
+ * After AuthGuard processes the request, either `user` (JWT auth)
  * or `service` (API key auth) will be populated.
  */
 export interface AuthenticatedRequest extends Request {

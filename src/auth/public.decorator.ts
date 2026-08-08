@@ -8,7 +8,7 @@ export const IS_PUBLIC_KEY = 'isPublic';
 /**
  * Decorator to mark routes as public (no authentication required).
  *
- * When applied to a controller method or class, KongAuthGuard will
+ * When applied to a controller method or class, AuthGuard will
  * skip authentication checks for those routes.
  *
  * @example Method-level (specific endpoint is public)
@@ -22,7 +22,7 @@ export const IS_PUBLIC_KEY = 'isPublic';
  *   }
  *
  *   @Get('profile')
- *   @UseGuards(KongAuthGuard)
+ *   @UseGuards(AuthGuard)
  *   async getProfile(@Request() req: AuthenticatedRequest) {
  *     // Authentication required
  *     const user = req.user;
