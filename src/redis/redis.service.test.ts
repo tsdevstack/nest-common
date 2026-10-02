@@ -2,6 +2,7 @@ import { describe, it, expect, rs, beforeEach } from '@rstest/core';
 
 const { mockRedisInstance, MockRedis } = rs.hoisted(() => {
   const instance = {
+    status: 'ready',
     on: rs.fn().mockReturnThis(),
     connect: rs.fn().mockResolvedValue(undefined),
     disconnect: rs.fn(),
@@ -26,11 +27,13 @@ rs.mock('@nestjs/common', () => ({
   Injectable: () => (target: unknown) => target,
   Logger: class {
     log = rs.fn();
+    warn = rs.fn();
     error = rs.fn();
   },
 }));
 
 import { RedisService } from './redis.service';
+import { redisRetryStrategy } from './redis-retry-strategy';
 import type { SecretsService } from '../secrets/secrets.service';
 
 describe('RedisService', () => {
@@ -94,6 +97,87 @@ describe('RedisService', () => {
       await expect(service.onModuleInit()).rejects.toThrow(
         'Connection refused',
       );
+    });
+  });
+
+  describe('Reconnect', () => {
+    it('should use the never-give-up retry strategy', async () => {
+      await service.onModuleInit();
+
+      expect(MockRedis).toHaveBeenCalledWith(
+        expect.objectContaining({ retryStrategy: redisRetryStrategy }),
+      );
+    });
+
+    it('should keep the offline queue disabled', async () => {
+      await service.onModuleInit();
+
+      expect(MockRedis).toHaveBeenCalledWith(
+        expect.objectContaining({ enableOfflineQueue: false }),
+      );
+    });
+  });
+
+  describe('Ready hook', () => {
+    const emitReady = (): void => {
+      const readyCall = mockRedisInstance.on.mock.calls.find(
+        ([event]) => event === 'ready',
+      );
+      expect(readyCall).toBeDefined();
+      (readyCall![1] as () => void)();
+    };
+
+    it('should call listeners on every ready event', async () => {
+      const listener = rs.fn();
+      service.onReady(listener);
+      await service.onModuleInit();
+
+      emitReady();
+      emitReady();
+
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('should stop calling a removed listener', async () => {
+      const listener = rs.fn();
+      const unsubscribe = service.onReady(listener);
+      await service.onModuleInit();
+
+      unsubscribe();
+      emitReady();
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('should keep notifying other listeners when one throws', async () => {
+      const failing = rs.fn(() => {
+        throw new Error('boom');
+      });
+      const rejecting = rs.fn(() => Promise.reject(new Error('async boom')));
+      const other = rs.fn();
+      service.onReady(failing);
+      service.onReady(rejecting);
+      service.onReady(other);
+      await service.onModuleInit();
+
+      expect(() => emitReady()).not.toThrow();
+      expect(other).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('isReady', () => {
+    it('should return false before init', () => {
+      expect(service.isReady()).toBe(false);
+    });
+
+    it('should reflect the client status', async () => {
+      await service.onModuleInit();
+      mockRedisInstance.status = 'ready';
+      expect(service.isReady()).toBe(true);
+
+      mockRedisInstance.status = 'reconnecting';
+      expect(service.isReady()).toBe(false);
+      mockRedisInstance.status = 'ready';
     });
   });
 

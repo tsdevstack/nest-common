@@ -37,7 +37,8 @@ export class CloudProviderAdapter implements SecretsProvider {
 
   /**
    * Get all secrets for a service
-   * Lists all secrets and filters by service name
+   * Lists the keys of this service's scope and the shared scope, then fetches
+   * each value
    *
    * Note: This is less efficient than the local provider's getAll()
    * since cloud providers need to fetch each secret individually.
@@ -47,9 +48,7 @@ export class CloudProviderAdapter implements SecretsProvider {
     const allSecrets = await this.cloudProvider.list();
     const result: Record<string, string> = {};
 
-    // Filter secrets by service name and fetch their values
-    // Secret format: {projectName}-{scope}-{KEY}
-    // We want secrets where scope matches serviceName or is 'shared'
+    // list() already returns only this service's and shared keys
     for (const key of allSecrets) {
       try {
         const value = await this.cloudProvider.get(key);

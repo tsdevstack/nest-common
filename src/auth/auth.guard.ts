@@ -7,84 +7,87 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { timingSafeEqual } from 'crypto';
 import { IS_PUBLIC_KEY } from './public.decorator';
-import { KongHeaders, KongUser } from './auth-user.interface';
+import { IS_PARTNER_API_KEY } from './partner-api.decorator';
+import { KongHeaders } from './auth-user.interface';
+import type {
+  AuthType,
+  AuthenticatedApiKey,
+  KongUser,
+} from './auth-user.interface';
+import { INTERNAL_SERVICE_NAME, PARTNER_SERVICE_NAME } from './auth.constants';
 import { SecretsService } from '../secrets/secrets.service';
+import { classifyGatewayIdentity } from './utils/classify-gateway-identity';
+import { getRequestPathname } from './utils/get-request-pathname';
+import { isInfrastructurePath } from './utils/is-infrastructure-path';
+import { readHeader } from './utils/read-header';
+import { timingSafeStringEqual } from './utils/timing-safe-string-equal';
 
-// Type for the request object (Express/Fastify compatible)
-interface RequestWithHeaders {
+/** Request shape the guard reads and populates (Express compatible) */
+interface GuardRequest {
+  method?: string;
   url?: string;
   path?: string;
   headers: Record<string, string | string[] | undefined>;
+  authType?: AuthType;
   user?: KongUser;
+  apiKey?: AuthenticatedApiKey;
   service?: string;
+  viaGateway?: boolean;
 }
 
+/** Result of checking a service `x-api-key` */
+type ServiceKeyCheck = 'valid' | 'invalid' | 'unconfigured';
+
 /**
- * Guard that validates requests came through Kong gateway and extracts user data.
+ * Authenticates every request and enforces who may call a handler.
  *
- * This guard implements the tsdevstack authentication architecture where:
- * 1. Kong validates JWT signatures using JWKS endpoint
- * 2. Kong forwards ALL JWT claims as JSON in `X-Userinfo` header (kong-oidc-v3)
- * 3. Kong adds `X-Kong-Trust` header to prove requests came through gateway
- * 4. Services validate Kong trust header for defense-in-depth security
- * 5. Services trust Kong headers (network isolation + trust header prevents spoofing)
- * 6. Services never validate JWT tokens themselves
+ * ## Trust first
  *
- * ## How It Works
+ * Kong adds `X-Kong-Trust` (the `KONG_TRUST_TOKEN` secret) to every request it
+ * forwards. Identity headers count only after that token is verified:
  *
- * ### Kong Trust Header Verification
- * - Kong adds `X-Kong-Trust` header with KONG_TRUST_TOKEN value to ALL requests
- * - Guard verifies this header before processing authentication
- * - Direct service-to-service calls with `x-api-key` bypass this check
- * - Prevents direct access to backend services bypassing Kong
+ * - Token valid: the caller is classified by the Kong plugin that vouched for
+ *   it. `X-Userinfo` (OIDC) gives `authType: 'user'` and `req.user`.
+ *   `X-Api-Key-Id` and `X-Api-Key-Consumer` (key plugin) give
+ *   `authType: 'apiKey'`, `req.apiKey` and `req.service = 'partner'`.
+ * - Token missing: identity headers are ignored. The request is an internal
+ *   service call with this service's `API_KEY` (`authType: 'service'`), an
+ *   anonymous call to a `@Public()` handler, or 401.
+ * - Token present but wrong: 401, except on infrastructure paths
+ *   (`/.well-known/`, `/health`, `/metrics`, matched on the path without the
+ *   query string), where the token is ignored and identity headers too.
  *
- * ### JWT Authentication (User Requests)
- * - Kong validates JWT and sets `X-Consumer-ID` (from JWT `sub` claim)
- * - Kong forwards all JWT claims as JSON in `X-Userinfo` header
- * - Guard parses the JSON and extracts ALL claims into `req.user` object
- * - Claims preserve their original types (arrays, numbers, booleans, strings)
- * - Falls back to legacy `X-JWT-Claim-*` headers for backward compatibility
+ * A valid token also sets `req.viaGateway = true`, so later guards (for
+ * example `RateLimitGuard` reading `X-Real-IP`) can trust gateway-set headers.
  *
- * ### API Key Authentication (Service-to-Service)
- * - Kong validates API key and sets `X-Consumer-Username` (service name)
- * - Guard sets `req.service` to the service name
- * - No user object is created
+ * The consumer headers of Kong's bundled auth plugins (`X-Consumer-*`,
+ * `X-Credential-Identifier`) never produce a user or a partner key.
+ * `X-Userinfo` together with an API key identity header (`X-Api-Key-Id`,
+ * `X-Api-Key-Consumer`) is treated as forged: 401.
  *
- * ### Public Endpoints
- * - Routes marked with `@Public()` decorator skip user authentication
- * - But still require Kong trust header (unless direct service-to-service)
+ * ## Who may call a handler
  *
- * @example Basic usage with JWT
+ * - `apiKey` on a handler without `@PartnerApi()`: 403.
+ * - `@Public()`: anyone (credentials are still classified when present).
+ * - `@PartnerApi()`: any authenticated caller (`apiKey`, `user`, `service`).
+ * - Otherwise: a `user` or an internal `service`; no credentials gives 401.
+ *
+ * A service `x-api-key` that does not match `API_KEY` gives 403, except on
+ * `@Public()` handlers, where it is ignored.
+ *
+ * @example
  * ```typescript
- * @Controller('offers')
- * export class OffersController {
- *   @Post()
- *   @UseGuards(AuthGuard)
- *   create(@Request() req: AuthenticatedRequest) {
- *     const { id, email, roles } = req.user;
- *     // Access any custom claims dynamically
- *     const tenantId = req.user.tenantId;
- *   }
+ * @Get('profile')
+ * profile(@Req() req: AuthenticatedRequest) {
+ *   return req.user; // authType === 'user'
  * }
- * ```
  *
- * @example Public endpoint
- * ```typescript
- * @Get()
- * @Public()
- * list() {
- *   // No user authentication required, but must come through Kong
- * }
- * ```
- *
- * @example Service-to-service with API key
- * ```typescript
- * @Get('internal')
- * @UseGuards(AuthGuard)
- * internal(@Request() req: AuthenticatedRequest) {
- *   const serviceName = req.service; // e.g., "bff-service"
+ * @Get('export')
+ * @ApiBearerAuth()
+ * @PartnerApi()
+ * export(@Req() req: AuthenticatedRequest) {
+ *   // authType: 'user' via /data/export, 'apiKey' via /api/data/export
  * }
  * ```
  */
@@ -97,328 +100,167 @@ export class AuthGuard implements CanActivate {
     private secrets: SecretsService,
   ) {}
 
-  /**
-   * Validates the request came through Kong and extracts authentication data.
-   *
-   * @param context - Execution context
-   * @returns true if authentication is valid or endpoint is public
-   * @throws UnauthorizedException if Kong headers are missing
-   */
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<GuardRequest>();
+    const targets = [context.getHandler(), context.getClass()];
+    const isPublic =
+      this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, targets) ===
+      true;
+    const isPartnerApi =
+      this.reflector.getAllAndOverride<boolean>(IS_PARTNER_API_KEY, targets) ===
+      true;
 
-    const apiKey = request.headers['x-api-key'] as string | undefined;
-    const kongTrustHeader = request.headers['x-kong-trust'] as string | undefined;
-
-    // Determine if request came through Kong (has trust header)
-    const cameFromKong = !!kongTrustHeader;
-
-    if (cameFromKong) {
-      // Request has Kong trust header - verify it's valid
-      await this.verifyKongTrustHeader(request);
-      // If API key is present, Kong already validated it (partner API)
-      // No need to re-validate against service's API_KEY
-    } else if (apiKey) {
-      // Direct service-to-service call (no Kong) - validate API key
-      await this.validateServiceApiKey(request, apiKey);
+    const trusted = await this.verifyKongTrust(request);
+    if (trusted) {
+      request.viaGateway = true;
     }
 
-    // Check if endpoint is marked as @Public()
-    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const identity = trusted ? classifyGatewayIdentity(request.headers) : null;
+
+    if (identity?.authType === 'conflict') {
+      this.logger.warn(
+        'Conflicting identity headers: X-Userinfo together with API key headers - treated as forged',
+        { path: getRequestPathname(request) },
+      );
+      throw new UnauthorizedException('Unauthorized request');
+    }
+
+    if (identity?.authType === 'user') {
+      request.authType = 'user';
+      request.user = identity.user;
+    } else if (identity?.authType === 'apiKey') {
+      request.authType = 'apiKey';
+      request.apiKey = identity.apiKey;
+      request.service = PARTNER_SERVICE_NAME;
+    } else {
+      await this.authenticateService(request, isPublic);
+    }
+
+    return this.authorize(request, isPublic, isPartnerApi);
+  }
+
+  /**
+   * Decides whether the classified caller may use the handler.
+   */
+  private authorize(
+    request: GuardRequest,
+    isPublic: boolean,
+    isPartnerApi: boolean,
+  ): boolean {
+    if (request.authType === 'apiKey' && !isPartnerApi) {
+      this.logger.warn('API key request on a handler without @PartnerApi()', {
+        path: getRequestPathname(request),
+        keyId: request.apiKey?.id,
+        consumer: request.apiKey?.consumer,
+      });
+      throw new ForbiddenException('API keys cannot access this endpoint');
+    }
 
     if (isPublic) {
       return true;
     }
 
-    // Check for Kong headers (from gateway or service-to-service forwarding)
-    const consumerId = request.headers[KongHeaders.CONSUMER_ID];
-    const consumerUsername = request.headers[KongHeaders.CONSUMER_USERNAME];
-    const credentialIdentifier = request.headers[KongHeaders.CREDENTIAL_IDENTIFIER];
-    const userinfo = request.headers[KongHeaders.USERINFO];
-
-    // If we have Kong headers, extract user/service info
-    const hasKongHeaders = consumerId || consumerUsername || credentialIdentifier || userinfo;
-
-    if (hasKongHeaders) {
-      // JWT authentication: Build user from headers
-      if (consumerId || credentialIdentifier || userinfo) {
-        request.user = this.extractUserFromHeaders(request.headers);
-      }
-      // Kong API key authentication (partner APIs): Set service name
-      else if (consumerUsername) {
-        request.service = consumerUsername;
-      }
-      return true;
+    if (request.authType === undefined) {
+      throw new UnauthorizedException('No authentication provided');
     }
 
-    // Partner API through Kong: has trust header + API key, but X-Consumer-Username removed
-    if (cameFromKong && apiKey) {
-      request.service = 'partner'; // Generic partner identifier
-      return true;
-    }
-
-    // Direct service-to-service (validated above)
-    if (apiKey) {
-      return true;
-    }
-
-    // No authentication provided at all
-    throw new UnauthorizedException('No authentication provided');
+    // @PartnerApi() handlers accept every authenticated caller; the others
+    // accept users and internal services (apiKey was rejected above).
+    return true;
   }
 
   /**
-   * Extracts user object from Kong headers.
+   * Verifies the Kong trust token.
    *
-   * kong-oidc-v3 forwards JWT claims as base64-encoded JSON in the `X-Userinfo` header.
-   * Falls back to legacy `X-JWT-Claim-*` headers for backward compatibility.
-   *
-   * @param headers - HTTP headers from the request
-   * @returns User object with id and all dynamic claims
-   *
-   * @example
-   * ```typescript
-   * // Input headers (kong-oidc-v3):
-   * {
-   *   'x-credential-identifier': 'user-123',
-   *   'x-userinfo': 'eyJzdWIiOiJ1c2VyLTEyMyIsImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsInJvbGVzIjpbIlVTRVIiLCJBRE1JTiJdLCJ0ZW5hbnRJZCI6InRlbmFudC00NTYifQ=='
-   * }
-   *
-   * // Output user object:
-   * {
-   *   id: 'user-123',
-   *   email: 'user@example.com',
-   *   roles: ['USER', 'ADMIN'],
-   *   tenantId: 'tenant-456'
-   * }
-   * ```
+   * @returns true when a valid token is present; false when it is absent or
+   *   the path is an infrastructure endpoint
+   * @throws UnauthorizedException when the token is present but wrong
    */
-  private extractUserFromHeaders(headers: Record<string, string>): KongUser {
-    // Primary: Extract claims from X-Userinfo JSON (kong-oidc-v3)
-    // Note: kong-oidc-v3 base64-encodes the userinfo JSON
-    const userinfo = headers[KongHeaders.USERINFO];
-    if (userinfo) {
-      try {
-        // Decode base64 to get JSON string
-        const decodedUserinfo = Buffer.from(userinfo, 'base64').toString('utf-8');
-        const claims = JSON.parse(decodedUserinfo);
-
-        // Build user object with 'sub' claim as 'id'
-        const user: KongUser = { id: claims.sub };
-
-        // Copy all other claims
-        Object.keys(claims).forEach((key) => {
-          if (key !== 'sub') {
-            user[key] = claims[key];
-          }
-        });
-
-        return user;
-      } catch (error) {
-        // Log error but continue to fallback
-        console.error('Failed to parse X-Userinfo header:', error);
-      }
+  private async verifyKongTrust(request: GuardRequest): Promise<boolean> {
+    const provided = readHeader(request.headers, KongHeaders.KONG_TRUST);
+    if (provided === undefined) {
+      return false;
     }
 
-    // Fallback: Get user ID from consumer headers
-    const userId = headers[KongHeaders.CONSUMER_ID] || headers[KongHeaders.CREDENTIAL_IDENTIFIER];
-    const user: KongUser = { id: userId };
-
-    // Fallback: Extract claims from X-JWT-Claim-* headers (legacy)
-    Object.keys(headers).forEach((key) => {
-      if (key.startsWith(KongHeaders.JWT_CLAIM_PREFIX)) {
-        // Extract claim name (remove prefix)
-        const claimName = key.replace(KongHeaders.JWT_CLAIM_PREFIX, '');
-
-        // Convert to camelCase (tenant-id → tenantId)
-        const camelCase = this.toCamelCase(claimName);
-
-        // Parse value intelligently
-        user[camelCase] = this.parseValue(headers[key]);
-      }
-    });
-
-    return user;
-  }
-
-  /**
-   * Converts kebab-case to camelCase.
-   *
-   * @param str - Kebab-case string (e.g., "tenant-id")
-   * @returns CamelCase string (e.g., "tenantId")
-   *
-   * @example
-   * ```typescript
-   * toCamelCase('tenant-id')      // 'tenantId'
-   * toCamelCase('is-verified')    // 'isVerified'
-   * toCamelCase('email')          // 'email'
-   * ```
-   */
-  private toCamelCase(str: string): string {
-    return str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-  }
-
-  /**
-   * Parses header value to appropriate JavaScript type.
-   *
-   * Kong forwards all JWT claims as strings. This method intelligently
-   * parses them back to their original types:
-   * - Arrays: "USER,ADMIN" → ["USER", "ADMIN"]
-   * - Numbers: "123" → 123
-   * - Booleans: "true" → true, "false" → false
-   * - Strings: everything else
-   *
-   * @param value - String value from header
-   * @returns Parsed value in appropriate type
-   *
-   * @example
-   * ```typescript
-   * parseValue('USER,ADMIN')     // ['USER', 'ADMIN']
-   * parseValue('123')            // 123
-   * parseValue('true')           // true
-   * parseValue('false')          // false
-   * parseValue('john@example.com') // 'john@example.com'
-   * ```
-   */
-  private parseValue(value: string): string | string[] | number | boolean {
-    // Parse arrays (comma-separated values)
-    if (value.includes(',')) {
-      return value.split(',').map((v) => v.trim());
+    const pathname = getRequestPathname(request);
+    if (isInfrastructurePath(pathname)) {
+      this.logger.debug(
+        `Ignoring Kong trust header on infrastructure endpoint: ${pathname}`,
+      );
+      return false;
     }
 
-    // Parse numbers (only if entire string is digits)
-    if (/^\d+$/.test(value)) {
-      return parseInt(value, 10);
-    }
-
-    // Parse booleans
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-
-    // Return as string
-    return value;
-  }
-
-  /**
-   * Verifies that the request came through Kong gateway by validating the trust header.
-   * This is a defense-in-depth measure to prevent direct access to backend services.
-   *
-   * @param request - HTTP request object
-   * @throws UnauthorizedException if Kong trust header is missing or invalid
-   *
-   * @example
-   * ```typescript
-   * // Kong adds this header to all requests:
-   * // Request headers: { 'x-kong-trust': 'KONG_TRUST_TOKEN_VALUE' }
-   * // Service validates it matches the KONG_TRUST_TOKEN from secrets
-   * ```
-   */
-  private async verifyKongTrustHeader(request: RequestWithHeaders): Promise<void> {
-    // Allow infrastructure endpoints to be accessed without Kong trust header
-    // These are accessed directly by Prometheus/K8s, not through Kong gateway
-    const path = request.url || request.path;
-    if (path) {
-      // .well-known: needed by Kong's OIDC plugin for discovery and JWKS
-      // /health, /metrics: infrastructure endpoints for Prometheus/K8s probes
-      if (
-        path.includes('/.well-known/') ||
-        path === '/health' ||
-        path.startsWith('/health/') ||
-        path === '/metrics'
-      ) {
-        this.logger.debug(`Skipping Kong trust check for infrastructure endpoint: ${path}`);
-        return;
-      }
-    }
-
-    const kongTrustHeader = request.headers['x-kong-trust'] as string | undefined;
-
-    if (!kongTrustHeader) {
-      this.logger.warn('Missing Kong trust header - request did not come through gateway');
-      throw new UnauthorizedException('Unauthorized request');
-    }
-
-    // Get expected Kong trust token from secrets
-    const expectedToken = await this.secrets.get('KONG_TRUST_TOKEN');
-
-    if (!expectedToken) {
+    const expected = await this.secrets.get('KONG_TRUST_TOKEN');
+    if (!expected) {
       this.logger.error('KONG_TRUST_TOKEN not configured in secrets');
       throw new UnauthorizedException('Authentication configuration error');
     }
 
-    // Timing-safe comparison to prevent timing attacks
-    const provided = Buffer.from(kongTrustHeader);
-    const expected = Buffer.from(expectedToken);
-
-    if (
-      provided.length !== expected.length ||
-      !timingSafeEqual(provided, expected)
-    ) {
+    if (!timingSafeStringEqual(provided, expected)) {
       this.logger.warn('Invalid Kong trust header - possible bypass attempt');
       throw new UnauthorizedException('Unauthorized request');
     }
 
-    this.logger.debug('Kong trust header verified');
+    return true;
   }
 
   /**
-   * Validates direct service-to-service API key authentication.
-   * Used when services call each other directly (bypassing Kong).
+   * Authenticates an internal service call by its `x-api-key`, when present.
+   * Sets `authType: 'service'` and `req.service` on success.
    *
-   * @param request - HTTP request object
-   * @param apiKey - API key from x-api-key header
-   * @returns true if API key is valid
-   * @throws UnauthorizedException if API key configuration is missing
-   * @throws ForbiddenException if API key is invalid
-   *
-   * @example
-   * ```typescript
-   * // Service A calling Service B:
-   * // Request headers: { 'x-api-key': 'AUTH_SERVICE_API_KEY_VALUE' }
-   * // Service B validates against its own API_KEY from secrets
-   * ```
+   * @throws ForbiddenException for a wrong key on a non-public handler
+   * @throws UnauthorizedException when `API_KEY` is not configured on a non-public handler
    */
-  private async validateServiceApiKey(
-    request: RequestWithHeaders,
-    apiKey: string,
-  ): Promise<boolean> {
-    // Structured audit log context
+  private async authenticateService(
+    request: GuardRequest,
+    isPublic: boolean,
+  ): Promise<void> {
+    const apiKey = readHeader(request.headers, KongHeaders.API_KEY);
+    if (apiKey === undefined) {
+      return;
+    }
+
+    const caller =
+      readHeader(request.headers, KongHeaders.SERVICE_NAME) ||
+      INTERNAL_SERVICE_NAME;
     const auditContext = {
       type: 'service-to-service',
-      method: (request as { method?: string }).method || 'UNKNOWN',
-      path: request.url || request.path || 'UNKNOWN',
-      caller: (request.headers['x-service-name'] as string) || 'unknown',
-      // Don't log full API key - use fingerprint for debugging
-      keyFingerprint: apiKey.slice(0, 8) + '...',
+      method: request.method || 'UNKNOWN',
+      path: getRequestPathname(request) || 'UNKNOWN',
+      caller,
     };
 
-    // Get this service's own API key from secrets
-    const validApiKey = await this.secrets.get('API_KEY');
+    const check = await this.checkServiceApiKey(apiKey);
 
-    if (!validApiKey) {
-      this.logger.error('API_KEY not configured in secrets');
+    if (check === 'valid') {
+      request.authType = 'service';
+      request.service = caller;
+      this.logger.log('Service-to-service request authenticated', auditContext);
+      return;
+    }
+
+    if (isPublic) {
+      // A wrong key does not block a public handler; the caller stays anonymous.
+      return;
+    }
+
+    if (check === 'unconfigured') {
       throw new UnauthorizedException('Server API key is not configured');
     }
 
-    // Timing-safe comparison to prevent timing attacks
-    const provided = Buffer.from(apiKey);
-    const expected = Buffer.from(validApiKey);
+    this.logger.warn('Invalid service API key attempt', auditContext);
+    throw new ForbiddenException('Invalid API key');
+  }
 
-    if (
-      provided.length !== expected.length ||
-      !timingSafeEqual(provided, expected)
-    ) {
-      this.logger.warn('Invalid service API key attempt', auditContext);
-      throw new ForbiddenException('Invalid API key');
+  /**
+   * Compares a provided key with this service's `API_KEY` secret.
+   */
+  private async checkServiceApiKey(apiKey: string): Promise<ServiceKeyCheck> {
+    const validApiKey = await this.secrets.get('API_KEY');
+    if (!validApiKey) {
+      this.logger.error('API_KEY not configured in secrets');
+      return 'unconfigured';
     }
-
-    // Valid API key - this is an internal service call
-    // Use x-service-name header if provided, otherwise default to 'internal'
-    request.service = (request.headers['x-service-name'] as string) || 'internal';
-    this.logger.log('Service-to-service request authenticated', auditContext);
-
-    return true;
+    return timingSafeStringEqual(apiKey, validApiKey) ? 'valid' : 'invalid';
   }
 }

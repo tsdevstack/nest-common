@@ -6,11 +6,16 @@ import {
 } from '@nestjs/common';
 import Redis from 'ioredis';
 import { SecretsService } from '../secrets/secrets.service';
+import { redisRetryStrategy } from './redis-retry-strategy';
+
+/** Called every time the Redis connection becomes ready */
+export type RedisReadyListener = () => void | Promise<void>;
 
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private redis!: Redis;
   private readonly logger = new Logger(RedisService.name);
+  private readonly readyListeners = new Set<RedisReadyListener>();
 
   constructor(private readonly secrets: SecretsService) {}
 
@@ -35,26 +40,29 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         // "Pooling" means limiting service instances, not connections per instance
         maxRetriesPerRequest: 3,
         enableReadyCheck: true,
+        // Commands fail fast while disconnected; callers keep their own
+        // fail-open or fail-closed behavior
         enableOfflineQueue: false,
 
         // Reuse connections (optimize for container/serverless)
         lazyConnect: true,
         keepAlive: 30000, // 30 seconds
 
-        // Connection timeout and retry
+        // Connection timeout and retry: reconnect forever, backoff capped at 5 s
         connectTimeout: 10000,
-        retryStrategy: (times) => {
-          if (times > 3) {
-            this.logger.error('Max connection retries exceeded');
-            return null;
-          }
-          const delay = Math.min(times * 50, 2000);
-          return delay;
-        },
+        retryStrategy: redisRetryStrategy,
       });
 
       this.redis.on('connect', () => {
         this.logger.log('Connected to Redis');
+      });
+
+      this.redis.on('ready', () => {
+        this.notifyReady();
+      });
+
+      this.redis.on('reconnecting', (delay: number) => {
+        this.logger.warn(`Redis connection lost, reconnecting in ${delay} ms`);
       });
 
       this.redis.on('error', (error) => {
@@ -74,6 +82,44 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   getClient(): Redis {
     return this.redis;
+  }
+
+  /**
+   * Whether the connection is ready to run commands.
+   */
+  isReady(): boolean {
+    return this.redis?.status === 'ready';
+  }
+
+  /**
+   * Subscribes to the connection becoming ready: once after startup and again
+   * after every reconnect (for example to rebuild data a Redis restart wiped).
+   * Listener errors are logged, never thrown.
+   *
+   * A listener added after the first connect is not called for it; check
+   * `isReady()` when subscribing if the current state matters.
+   *
+   * @param listener - Called on every transition to ready
+   * @returns Function that removes the listener
+   */
+  onReady(listener: RedisReadyListener): () => void {
+    this.readyListeners.add(listener);
+    return () => {
+      this.readyListeners.delete(listener);
+    };
+  }
+
+  private notifyReady(): void {
+    this.logger.log('Redis connection ready');
+    for (const listener of this.readyListeners) {
+      try {
+        Promise.resolve(listener()).catch((error: unknown) => {
+          this.logger.error('Redis ready listener failed:', error);
+        });
+      } catch (error) {
+        this.logger.error('Redis ready listener failed:', error);
+      }
+    }
   }
 
   async get(key: string): Promise<string | null> {

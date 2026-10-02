@@ -3,6 +3,7 @@ import { ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
 import { RateLimitGuard } from './rate-limit.guard';
+import { hashApiKeyForKey } from './hash-api-key-for-key';
 import type { RedisService } from '../redis/redis.service';
 
 describe('RateLimitGuard', () => {
@@ -203,30 +204,39 @@ describe('RateLimitGuard', () => {
   });
 
   describe('Key generators', () => {
-    it('should use IP by default', async () => {
+    it('should use the socket address by default and ignore X-Forwarded-For', async () => {
       rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
         maxRequests: 10,
       });
 
       await guard.canActivate(
-        createMockContext({ 'x-forwarded-for': '10.0.0.1' }),
+        createMockContext(
+          { 'x-forwarded-for': '10.0.0.1', 'x-real-ip': '10.0.0.3' },
+          { viaGateway: true },
+        ),
       );
 
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringContaining('ip:10.0.0.1'),
+        expect.stringContaining('ip:10.0.0.3:'),
+      );
+      expect(mockRedisClient.incr).not.toHaveBeenCalledWith(
+        expect.stringContaining('10.0.0.1'),
       );
     });
 
-    it('should extract IP from x-real-ip', async () => {
+    it('should use X-Real-IP only for requests AuthGuard verified as coming through Kong', async () => {
       rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
         maxRequests: 10,
       });
 
+      await guard.canActivate(
+        createMockContext({ 'x-real-ip': '10.0.0.2' }, { viaGateway: true }),
+      );
       await guard.canActivate(createMockContext({ 'x-real-ip': '10.0.0.2' }));
 
-      expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringContaining('ip:10.0.0.2'),
-      );
+      expect(mockRedisClient.incr.mock.calls[0][0]).toContain('ip:10.0.0.2:');
+      // Without the gateway flag (direct call, or no AuthGuard): socket address
+      expect(mockRedisClient.incr.mock.calls[1][0]).toContain('ip:127.0.0.1:');
     });
 
     it('should use apiKey generator', async () => {
@@ -235,21 +245,103 @@ describe('RateLimitGuard', () => {
         keyGenerator: 'apiKey',
       });
 
-      await guard.canActivate(createMockContext({ 'x-api-key': 'my-key' }));
+      await guard.canActivate(
+        createMockContext({ 'x-api-key': 'my-key' }, { authType: 'service' }),
+      );
 
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringContaining('api:my-key'),
+        expect.stringContaining(`api:${hashApiKeyForKey('my-key')}:`),
       );
     });
 
-    it('should throw UnauthorizedException for apiKey without header', async () => {
+    it('should never put the raw API key in the Redis key name', async () => {
       rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
         maxRequests: 10,
         keyGenerator: 'apiKey',
       });
 
-      await expect(guard.canActivate(createMockContext())).rejects.toThrow(
-        'API key required',
+      await guard.canActivate(
+        createMockContext(
+          { 'x-api-key': 'tsk_raw-secret-value' },
+          { authType: 'service' },
+        ),
+      );
+
+      const redisKey = mockRedisClient.incr.mock.calls[0][0] as string;
+      expect(redisKey).not.toContain('tsk_raw-secret-value');
+    });
+
+    it('should key apiKey limits by the partner key id when the gateway authenticated the key', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'apiKey',
+      });
+
+      await guard.canActivate(
+        createMockContext(
+          {},
+          { authType: 'apiKey', apiKey: { id: 'key-1', consumer: 'acme' } },
+        ),
+      );
+
+      expect(mockRedisClient.incr).toHaveBeenCalledWith(
+        expect.stringContaining('apikey:key-1:'),
+      );
+    });
+
+    it('should fall back to IP for anonymous callers', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'apiKey',
+      });
+
+      await expect(
+        guard.canActivate(
+          createMockContext({ 'x-real-ip': '10.0.0.9' }, { viaGateway: true }),
+        ),
+      ).resolves.toBe(true);
+
+      expect(mockRedisClient.incr).toHaveBeenCalledWith(
+        expect.stringContaining('ip:10.0.0.9:'),
+      );
+    });
+
+    it('should fall back to IP for an x-api-key that AuthGuard did not authenticate', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'apiKey',
+      });
+
+      await guard.canActivate(
+        createMockContext(
+          {
+            'x-api-key': 'unverified-key',
+            'x-real-ip': '10.0.0.9',
+          },
+          { viaGateway: true },
+        ),
+      );
+
+      const redisKey = mockRedisClient.incr.mock.calls[0][0] as string;
+      expect(redisKey).toContain('ip:10.0.0.9:');
+      expect(redisKey).not.toContain(hashApiKeyForKey('unverified-key'));
+    });
+
+    it('should fall back to IP for users', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'apiKey',
+      });
+
+      await guard.canActivate(
+        createMockContext(
+          { 'x-real-ip': '10.0.0.9' },
+          { authType: 'user', user: { id: 'user-1' }, viaGateway: true },
+        ),
+      );
+
+      expect(mockRedisClient.incr).toHaveBeenCalledWith(
+        expect.stringContaining('ip:10.0.0.9:'),
       );
     });
 
@@ -281,6 +373,42 @@ describe('RateLimitGuard', () => {
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
         expect.stringContaining('user:sub-456'),
       );
+    });
+
+    it('should fall back to the partner key id for apiKey requests (dual-access endpoints)', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'userId',
+      });
+
+      const result = await guard.canActivate(
+        createMockContext(
+          {},
+          {
+            authType: 'apiKey',
+            apiKey: { id: 'key-1', consumer: 'acme' },
+            service: 'partner',
+          },
+        ),
+      );
+
+      expect(result).toBe(true);
+      expect(mockRedisClient.incr).toHaveBeenCalledWith(
+        expect.stringContaining('apikey:key-1:'),
+      );
+    });
+
+    it('should not fall back to a key id unless AuthGuard classified the request as apiKey', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'userId',
+      });
+
+      await expect(
+        guard.canActivate(
+          createMockContext({}, { apiKey: { id: 'key-1', consumer: 'acme' } }),
+        ),
+      ).rejects.toThrow('User authentication required');
     });
 
     it('should throw UnauthorizedException for userId without user', async () => {

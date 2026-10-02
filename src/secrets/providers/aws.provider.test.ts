@@ -220,19 +220,116 @@ describe('AWSSecretsProvider', () => {
   });
 
   describe('list', () => {
-    it('should list all secrets for project', async () => {
-      mockSend.mockResolvedValue({
-        SecretList: [
-          { Name: 'testproject-shared-DATABASE_URL' },
-          { Name: 'testproject-test-service-API_KEY' },
-          { Name: 'testproject-shared-REDIS_HOST' },
-        ],
+    const createProvider = (
+      projectName: string,
+      serviceName: string,
+    ): AWSSecretsProvider =>
+      new AWSSecretsProvider({
+        projectName,
+        serviceName,
+        providerConfig: { region: 'us-east-1' },
       });
+
+    const mockSecretNames = (names: string[]): void => {
+      mockSend.mockResolvedValue({
+        SecretList: names.map((name) => ({ Name: name })),
+      });
+    };
+
+    it('should list shared and own service-scoped keys', async () => {
+      mockSecretNames([
+        'testproject-shared-DATABASE_URL',
+        'testproject-test-service-ADMIN_EMAILS',
+        'testproject-shared-REDIS_HOST',
+      ]);
 
       const result = await provider.list();
 
-      expect(result).toEqual(['DATABASE_URL', 'API_KEY', 'REDIS_HOST']);
+      expect(result).toEqual(['DATABASE_URL', 'ADMIN_EMAILS', 'REDIS_HOST']);
       expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('should skip secrets of other services', async () => {
+      mockSecretNames([
+        'testproject-shared-JWT_SECRET',
+        'testproject-offers-service-DATABASE_URL',
+        'testproject-test-service-DATABASE_URL',
+      ]);
+
+      const result = await provider.list();
+
+      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
+    });
+
+    it('should not pick up secrets of a service whose name it prefixes (auth vs auth-service)', async () => {
+      mockSecretNames([
+        'testproject-auth-service-DATABASE_URL',
+        'testproject-auth-ADMIN_EMAILS',
+      ]);
+
+      const result = await createProvider('testproject', 'auth').list();
+
+      expect(result).toEqual(['ADMIN_EMAILS']);
+    });
+
+    it('should not pick up secrets of a service whose name it prefixes (auth-service vs auth-service-v2)', async () => {
+      mockSecretNames([
+        'testproject-auth-service-v2-DATABASE_URL',
+        'testproject-auth-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('testproject', 'auth-service').list();
+
+      expect(result).toEqual(['DATABASE_URL']);
+    });
+
+    it('should handle a project name with hyphens', async () => {
+      mockSecretNames([
+        'my-app-shared-JWT_SECRET',
+        'my-app-auth-service-DATABASE_URL',
+        'my-app-offers-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('my-app', 'auth-service').list();
+
+      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
+    });
+
+    it('should list a key present in both scopes once', async () => {
+      mockSecretNames([
+        'testproject-test-service-REDIS_HOST',
+        'testproject-shared-REDIS_HOST',
+      ]);
+
+      const result = await provider.list();
+
+      expect(result).toEqual(['REDIS_HOST']);
+    });
+
+    it('should list a key present in both scopes once across pages', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          SecretList: [{ Name: 'testproject-shared-REDIS_HOST' }],
+          NextToken: 'next-page-token',
+        })
+        .mockResolvedValueOnce({
+          SecretList: [{ Name: 'testproject-test-service-REDIS_HOST' }],
+        });
+
+      const result = await provider.list();
+
+      expect(result).toEqual(['REDIS_HOST']);
+    });
+
+    it('should list only shared keys when no service name is set', async () => {
+      mockSecretNames([
+        'testproject-shared-JWT_SECRET',
+        'testproject-auth-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('testproject', '').list();
+
+      expect(result).toEqual(['JWT_SECRET']);
     });
 
     it('should handle pagination', async () => {
@@ -318,18 +415,30 @@ describe('AWSSecretsProvider', () => {
       expect(mockSend).toHaveBeenCalledWith(expect.any(Object));
     });
 
-    it('should extract correct key from secret name', async () => {
+    it('should extract keys with underscores and digits from secret names', async () => {
       mockSend.mockResolvedValue({
         SecretList: [
-          { Name: 'testproject-shared-COMPLEX-KEY-NAME' },
-          { Name: 'testproject-shared-DATABASE-URL' },
+          { Name: 'testproject-shared-JWT_PRIVATE_KEY_CURRENT' },
+          { Name: 'testproject-test-service-S3_BUCKET_2' },
         ],
       });
 
       const result = await provider.list();
 
-      expect(result).toContain('COMPLEX-KEY-NAME');
-      expect(result).toContain('DATABASE-URL');
+      expect(result).toEqual(['JWT_PRIVATE_KEY_CURRENT', 'S3_BUCKET_2']);
+    });
+
+    it('should skip names whose key is not UPPERCASE_WITH_UNDERSCORES', async () => {
+      mockSend.mockResolvedValue({
+        SecretList: [
+          { Name: 'testproject-shared-DATABASE-URL' },
+          { Name: 'testproject-shared-lowercase_key' },
+        ],
+      });
+
+      const result = await provider.list();
+
+      expect(result).toEqual([]);
     });
   });
 

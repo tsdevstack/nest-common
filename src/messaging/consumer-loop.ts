@@ -21,6 +21,7 @@ import {
 import { parseStreamEntry } from './parse-stream-entry';
 import { claimStuckMessages } from './claim-stuck-messages';
 import { reapIdleConsumers } from './reap-idle-consumers';
+import { ensureConsumerGroup } from './ensure-consumer-group';
 
 export interface ConsumerLoopOptions {
   /** The ioredis client (dedicated connection with maxRetriesPerRequest: null) */
@@ -150,12 +151,30 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
         }
       } catch (loopError) {
         if (!running) break;
-        // Transient Redis error — log and retry after a brief pause
-        logger.error(
-          `Consumer loop error on topic "${topic}": ${
-            loopError instanceof Error ? loopError.message : 'Unknown error'
-          }`,
-        );
+        const message =
+          loopError instanceof Error ? loopError.message : 'Unknown error';
+        // The stream or group is gone (Redis flushed, restarted empty, or
+        // failed over): recreate the group instead of failing forever
+        if (message.includes('NOGROUP')) {
+          logger.warn(
+            `Consumer group missing on topic "${topic}", recreating it`,
+          );
+          try {
+            await ensureConsumerGroup(redis, streamKey, groupName, logger);
+            continue;
+          } catch (recreateError) {
+            logger.error(
+              `Failed to recreate consumer group on topic "${topic}": ${
+                recreateError instanceof Error
+                  ? recreateError.message
+                  : 'Unknown error'
+              }`,
+            );
+          }
+        } else {
+          // Transient Redis error — log and retry after a brief pause
+          logger.error(`Consumer loop error on topic "${topic}": ${message}`);
+        }
         // Brief backoff before retrying
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }

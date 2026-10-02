@@ -10,7 +10,10 @@ import {
 import { Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { RedisService } from '../redis/redis.service';
+import type { AuthType } from '../auth/auth-user.interface';
 import { RATE_LIMIT_KEY, RateLimitOptions } from './rate-limit.decorator';
+import { hashApiKeyForKey } from './hash-api-key-for-key';
+import { getClientIp } from './get-client-ip';
 
 interface RequestWithRateLimit extends Request {
   rateLimit?: {
@@ -22,6 +25,11 @@ interface RequestWithRateLimit extends Request {
     id?: string;
     sub?: string;
   };
+  authType?: AuthType;
+  apiKey?: {
+    id: string;
+  };
+  viaGateway?: boolean;
 }
 
 interface RateLimitResult {
@@ -146,39 +154,55 @@ export class RateLimitGuard implements CanActivate {
     const apiKeyHeader = request.headers['x-api-key'];
     const apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
     const userId = request.user?.id || request.user?.sub;
+    // Partner key id, set by AuthGuard from the gateway (never the raw key)
+    const partnerKeyId =
+      request.authType === 'apiKey' ? request.apiKey?.id : undefined;
 
     switch (options.keyGenerator) {
       case 'ip':
         return this.getClientIp(request);
 
       case 'apiKey':
-        if (!apiKey) {
-          throw new UnauthorizedException('API key required for this endpoint');
+        // Partner key authenticated by the gateway: limit per key id
+        if (partnerKeyId) {
+          return `apikey:${partnerKeyId}`;
         }
 
-        return `api:${apiKey}`;
+        // Internal service call authenticated by AuthGuard with its API_KEY.
+        // Never put a raw key in a Redis key name.
+        if (request.authType === 'service' && apiKey) {
+          return `api:${hashApiKeyForKey(apiKey)}`;
+        }
+
+        // Anyone else (anonymous, user, unverified x-api-key): per IP, like
+        // the default generator
+        return this.getClientIp(request);
 
       case 'userId':
-        if (!userId) {
-          throw new UnauthorizedException(
-            'User authentication required for this endpoint',
-          );
+        if (userId) {
+          return `user:${userId}`;
         }
 
-        return `user:${userId}`;
+        // Dual-access endpoints: partner requests are limited per key
+        if (partnerKeyId) {
+          return `apikey:${partnerKeyId}`;
+        }
+
+        throw new UnauthorizedException(
+          'User authentication required for this endpoint',
+        );
 
       default:
         return this.getClientIp(request);
     }
   }
 
+  /**
+   * Client address for IP limits. X-Real-IP (set by Kong) counts only after
+   * AuthGuard verified the trust token (`viaGateway`); AuthGuard is global,
+   * so it runs before this guard. Without it: the socket address.
+   */
   private getClientIp(request: RequestWithRateLimit): string {
-    const ip =
-      request.headers['x-forwarded-for']?.toString().split(',')[0] ||
-      request.headers['x-real-ip']?.toString() ||
-      request.socket?.remoteAddress ||
-      'unknown';
-
-    return `ip:${ip.trim()}`;
+    return `ip:${getClientIp(request)}`;
   }
 }

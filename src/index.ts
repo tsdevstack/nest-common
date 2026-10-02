@@ -4,15 +4,25 @@ export { AuthGuard } from './auth/auth.guard';
 export { Public, IS_PUBLIC_KEY } from './auth/public.decorator';
 export { PartnerApi, IS_PARTNER_API_KEY } from './auth/partner-api.decorator';
 export { Partner } from './auth/partner.decorator';
+export { ApiKey } from './auth/api-key.decorator';
+export { Roles } from './auth/roles.decorator';
+export { RolesGuard } from './auth/roles.guard';
+export { ROLES_KEY } from './auth/roles.constants';
 export type {
   KongUser,
   AuthenticatedRequest,
+  AuthenticatedApiKey,
+  AuthType,
 } from './auth/auth-user.interface';
 export { KongHeaders } from './auth/auth-user.interface';
 
 // Redis
 export { RedisModule } from './redis/redis.module';
 export { RedisService } from './redis/redis.service';
+export type { RedisReadyListener } from './redis/redis.service';
+
+// API key index (Redis contract of the tsdevstack-api-key Kong plugin)
+export * from './api-keys';
 
 // Rate Limiting
 export { RateLimitModule } from './rate-limit/rate-limit.module';

@@ -1,71 +1,105 @@
 import { Request } from 'express';
 
 /**
- * User object extracted from Kong headers.
+ * User object built from the gateway's `X-Userinfo` header.
  *
- * Kong forwards JWT claims as `X-JWT-Claim-*` headers, which are
- * dynamically extracted into this object. The `id` field is always
- * present (from `X-Consumer-ID`), but all other fields are dynamic
- * based on JWT claims.
+ * Kong's OIDC plugin validates the JWT and forwards all of its claims as
+ * base64-encoded JSON in `X-Userinfo`. `AuthGuard` decodes it: the `sub`
+ * claim becomes `id`, every other claim is copied as is.
  *
  * @example
  * ```typescript
- * // Kong headers:
- * // X-Consumer-ID: user-123
- * // X-JWT-Claim-Email: user@example.com
- * // X-JWT-Claim-Roles: USER,ADMIN
- * // X-JWT-Claim-TenantId: tenant-456
+ * // X-Userinfo (decoded):
+ * // { "sub": "user-123", "email": "user@example.com", "systemRole": "ADMIN", "roles": ["EDITOR"] }
  *
  * // Resulting KongUser:
  * {
  *   id: "user-123",
  *   email: "user@example.com",
- *   roles: ["USER", "ADMIN"],
- *   tenantId: "tenant-456"
+ *   systemRole: "ADMIN",
+ *   roles: ["EDITOR"]
  * }
  * ```
  */
 export interface KongUser {
-  /** User ID from X-Consumer-ID (JWT sub claim) */
+  /** User ID (JWT `sub` claim) */
   id: string;
 
-  /** Dynamic claims extracted from X-JWT-Claim-* headers */
+  /** Every other JWT claim, with its original JSON type */
   [key: string]: string | string[] | number | boolean | undefined;
 }
 
 /**
- * Express Request with Kong authentication populated.
+ * How the caller of a request was authenticated.
  *
- * After AuthGuard processes the request, either `user` (JWT auth)
- * or `service` (API key auth) will be populated.
+ * - `user`: a logged-in user; Kong's OIDC plugin validated the JWT (`req.user`)
+ * - `apiKey`: a partner API key validated by Kong (`req.apiKey`, `req.service === 'partner'`)
+ * - `service`: an internal service call with this service's `API_KEY` (`req.service`)
  */
-export interface AuthenticatedRequest extends Request {
-  /** User object (JWT authentication) */
-  user?: KongUser;
+export type AuthType = 'user' | 'apiKey' | 'service';
 
-  /** Service name (API key authentication) */
-  service?: string;
+/**
+ * The partner API key that authenticated a request, as reported by Kong.
+ * Never contains the raw key.
+ */
+export interface AuthenticatedApiKey {
+  /** Key identifier (`X-Api-Key-Id`) */
+  id: string;
+
+  /** Who the key was issued to, for example `acme-corp` (`X-Api-Key-Consumer`) */
+  consumer: string;
 }
 
 /**
- * Kong header names for type safety.
+ * Express Request with authentication populated by `AuthGuard`.
  *
- * These are the standard headers that Kong sets after validating
- * JWT tokens or API keys.
+ * `authType` says which of `user`, `apiKey` or `service` is set. On a
+ * `@Public()` route without credentials, none of them is set.
+ */
+export interface AuthenticatedRequest extends Request {
+  /** How the caller was authenticated; undefined for anonymous public requests */
+  authType?: AuthType;
+
+  /** Logged-in user (`authType === 'user'`) */
+  user?: KongUser;
+
+  /** Partner API key (`authType === 'apiKey'`) */
+  apiKey?: AuthenticatedApiKey;
+
+  /**
+   * Calling service: the `X-Service-Name` of an internal caller (or
+   * `'internal'`) when `authType === 'service'`, `'partner'` when
+   * `authType === 'apiKey'`.
+   */
+  service?: string;
+
+  /**
+   * True when the request came through Kong: AuthGuard verified the
+   * `X-Kong-Trust` token. Gateway-set headers such as `X-Real-IP` are
+   * trustworthy only then.
+   */
+  viaGateway?: boolean;
+}
+
+/**
+ * Header names read by `AuthGuard` (lowercase, as Node exposes them).
  */
 export enum KongHeaders {
-  /** Consumer ID (JWT sub claim) */
-  CONSUMER_ID = 'x-consumer-id',
+  /** Proof that the request came through Kong (set by the gateway's request-transformer) */
+  KONG_TRUST = 'x-kong-trust',
 
-  /** Consumer username (API key service name) */
-  CONSUMER_USERNAME = 'x-consumer-username',
-
-  /** Credential identifier (JWT sub claim from kong-oidc-v3) */
-  CREDENTIAL_IDENTIFIER = 'x-credential-identifier',
-
-  /** JWT claims as JSON (kong-oidc-v3 plugin) */
+  /** JWT claims as base64 JSON (kong-oidc-v3 plugin) */
   USERINFO = 'x-userinfo',
 
-  /** Prefix for JWT claim headers (legacy) */
-  JWT_CLAIM_PREFIX = 'x-jwt-claim-',
+  /** Partner API key identifier (tsdevstack-api-key plugin) */
+  API_KEY_ID = 'x-api-key-id',
+
+  /** Partner API key consumer name (tsdevstack-api-key plugin) */
+  API_KEY_CONSUMER = 'x-api-key-consumer',
+
+  /** Service API key for internal service-to-service calls */
+  API_KEY = 'x-api-key',
+
+  /** Name of the calling service on internal calls */
+  SERVICE_NAME = 'x-service-name',
 }

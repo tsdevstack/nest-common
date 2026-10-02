@@ -5,6 +5,8 @@ import {
   CloudProviderConfig,
   CacheEntry,
 } from './cloud-provider.interface';
+import { extractScopedSecretKey } from './extract-scoped-secret-key';
+import { CLOUD_SECRET_KEY_PATTERN } from '../secrets.constants';
 
 export class GCPSecretsProvider implements CloudSecretsProvider {
   private readonly logger = new Logger('GCPSecretsProvider');
@@ -163,10 +165,14 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
 
   /**
    * List all secrets for this service (both service-scoped and shared)
+   *
+   * Secrets of other services in the project are skipped. A key that exists
+   * in both scopes is listed once (get() returns the shared value).
    */
   async list(): Promise<string[]> {
     const parent = `projects/${this.gcpProjectId}`;
-    const secrets: string[] = [];
+    const scopePrefixes = this.buildScopePrefixes();
+    const keys = new Set<string>();
 
     try {
       const [secretsResponse] = await this.client.listSecrets({
@@ -176,17 +182,22 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
 
       for (const secret of secretsResponse) {
         if (secret.name) {
-          // Extract the key from the secret name
           // Format: projects/{project}/secrets/{projectName}-{scope}-{KEY}
           const secretId = secret.name.split('/').pop();
           if (secretId) {
-            const key = this.extractKeyFromSecretId(secretId);
-            secrets.push(key);
+            const key = extractScopedSecretKey(
+              secretId,
+              scopePrefixes,
+              CLOUD_SECRET_KEY_PATTERN,
+            );
+            if (key !== null) {
+              keys.add(key);
+            }
           }
         }
       }
 
-      return secrets;
+      return [...keys];
     } catch (error) {
       throw new Error(
         `Failed to list secrets from GCP: ${error instanceof Error ? error.message : String(error)}`,
@@ -249,15 +260,12 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Extract key from secret ID
-   * Input: "tsdevstack-auth-service-DATABASE_URL"
-   * Output: "DATABASE_URL"
+   * Name prefixes of the scopes list() returns: shared, and this service when
+   * a service name is set. Built like the names get() reads.
    */
-  private extractKeyFromSecretId(secretId: string): string {
-    const parts = secretId.split('-');
-    // Skip projectName and scope, take the rest
-    // Format: {projectName}-{scope}-{KEY}
-    return parts.slice(2).join('-');
+  private buildScopePrefixes(): string[] {
+    const scopes = this.serviceName ? ['shared', this.serviceName] : ['shared'];
+    return scopes.map((scope) => this.buildSecretName('', scope));
   }
 
   /**

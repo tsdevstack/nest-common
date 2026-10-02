@@ -4,6 +4,10 @@
  * @packageDocumentation
  */
 
-export { toCamelCase } from './to-camel-case';
-export { parseHeaderValue } from './parse-header-value';
-export { extractUserFromHeaders } from './extract-user-from-headers';
+export { classifyGatewayIdentity } from './classify-gateway-identity';
+export type { GatewayIdentity } from './classify-gateway-identity';
+export { getRequestPathname } from './get-request-pathname';
+export { isInfrastructurePath } from './is-infrastructure-path';
+export { parseUserinfoHeader } from './parse-userinfo-header';
+export { readHeader } from './read-header';
+export { timingSafeStringEqual } from './timing-safe-string-equal';

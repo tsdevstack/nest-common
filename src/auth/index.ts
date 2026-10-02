@@ -14,5 +14,14 @@ export { AuthGuard } from './auth.guard';
 export { Public, IS_PUBLIC_KEY } from './public.decorator';
 export { PartnerApi, IS_PARTNER_API_KEY } from './partner-api.decorator';
 export { Partner } from './partner.decorator';
-export type { KongUser, AuthenticatedRequest } from './auth-user.interface';
+export { ApiKey } from './api-key.decorator';
+export { Roles } from './roles.decorator';
+export { RolesGuard } from './roles.guard';
+export { ROLES_KEY } from './roles.constants';
+export type {
+  KongUser,
+  AuthenticatedRequest,
+  AuthenticatedApiKey,
+  AuthType,
+} from './auth-user.interface';
 export { KongHeaders } from './auth-user.interface';

@@ -136,4 +136,43 @@ describe('startConsumerLoop', () => {
     );
     expect(mockRedis.xreadgroup.mock.calls.length).toBeGreaterThan(1);
   });
+
+  it('should recreate the consumer group on NOGROUP and keep reading', async () => {
+    mockRedis.xreadgroup
+      .mockRejectedValueOnce(
+        new Error(
+          "NOGROUP No such key 'test:messaging:topic' or consumer group 'test:messaging:topic:service' in XREADGROUP with GROUP option",
+        ),
+      )
+      .mockResolvedValue(null);
+    mockRedis.xgroup = rs.fn().mockResolvedValue('OK');
+
+    const { stop } = startConsumerLoop({
+      redis: mockRedis as never,
+      streamKey: 'test:messaging:topic',
+      groupName: 'test:messaging:topic:service',
+      consumerName: 'service:1234',
+      topic: 'topic',
+      dlqStreamKey: 'test:messaging:topic:dlq',
+      handler: mockHandler,
+      logger: mockLogger as never,
+      blockTimeMs: 10,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await stop();
+
+    expect(mockRedis.xgroup).toHaveBeenCalledWith(
+      'CREATE',
+      'test:messaging:topic',
+      'test:messaging:topic:service',
+      '0',
+      'MKSTREAM',
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('recreating'),
+    );
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockRedis.xreadgroup.mock.calls.length).toBeGreaterThan(1);
+  });
 });

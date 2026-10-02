@@ -31,7 +31,7 @@ export interface CloudSecretsProvider {
   set(
     key: string,
     value: string,
-    metadata?: Record<string, string>
+    metadata?: Record<string, string>,
   ): Promise<void>;
 
   /**
@@ -42,9 +42,9 @@ export interface CloudSecretsProvider {
   remove(key: string): Promise<void>;
 
   /**
-   * List all secret keys managed by tsdevstack
-   *
-   * Filters by: managed-by=tsdevstack
+   * List the secret keys this service can read: its own scope and the shared
+   * scope. Secrets of other services are skipped; a key in both scopes is
+   * listed once.
    *
    * @returns Array of secret keys (without project/scope prefix)
    */

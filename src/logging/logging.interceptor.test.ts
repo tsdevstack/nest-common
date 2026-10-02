@@ -82,6 +82,23 @@ describe('LoggingInterceptor', () => {
       );
     });
 
+    it('should not log metrics scrapes or health probes but keep the correlation ID', async () => {
+      mockRequest.headers = { 'x-request-id': 'scrape-id' };
+      mockRequest.url = '/metrics';
+
+      await lastValueFrom(
+        interceptor.intercept(mockExecutionContext, mockCallHandler),
+      );
+
+      expect(mockResponse.setHeader).toHaveBeenCalledWith(
+        'X-Correlation-ID',
+        'scrape-id',
+      );
+      expect(mockChildLogger.debug).not.toHaveBeenCalled();
+      expect(mockChildLogger.info).not.toHaveBeenCalled();
+      expect(mockCallHandler.handle).toHaveBeenCalled();
+    });
+
     it('should use x-correlation-id header as fallback', async () => {
       mockRequest.headers = { 'x-correlation-id': 'correlation-id' };
 
@@ -171,6 +188,71 @@ describe('LoggingInterceptor', () => {
           duration: expect.any(Number),
         }),
       );
+    });
+
+    it('should log the API key id and consumer for partner requests', async () => {
+      mockRequest.authType = 'apiKey';
+      mockRequest.apiKey = { id: 'key-1', consumer: 'acme-corp' };
+      mockRequest.headers = { 'x-api-key': 'tsk_raw-secret' };
+
+      await lastValueFrom(
+        interceptor.intercept(mockExecutionContext, mockCallHandler),
+      );
+
+      expect(mockChildLogger.info).toHaveBeenCalledWith(
+        'Request completed',
+        expect.objectContaining({
+          apiKeyId: 'key-1',
+          apiKeyConsumer: 'acme-corp',
+        }),
+      );
+      expect(mockChildLogger.debug).toHaveBeenCalledWith(
+        'Incoming request',
+        expect.objectContaining({ apiKeyId: 'key-1' }),
+      );
+      const logged = JSON.stringify([
+        rs.mocked(mockChildLogger.info!).mock.calls,
+        rs.mocked(mockChildLogger.debug!).mock.calls,
+      ]);
+      expect(logged).not.toContain('tsk_raw-secret');
+    });
+
+    it('should log the API key on failed partner requests', async () => {
+      mockRequest.authType = 'apiKey';
+      mockRequest.apiKey = { id: 'key-1', consumer: 'acme-corp' };
+      const error = new Error('Test error');
+      mockCallHandler.handle = rs.fn().mockReturnValue(throwError(() => error));
+
+      await lastValueFrom(
+        interceptor
+          .intercept(mockExecutionContext, mockCallHandler)
+          .pipe(catchError(() => of(null))),
+      );
+
+      expect(mockChildLogger.error).toHaveBeenCalledWith(
+        'Request failed',
+        error,
+        expect.objectContaining({
+          apiKeyId: 'key-1',
+          apiKeyConsumer: 'acme-corp',
+        }),
+      );
+    });
+
+    it('should not add API key fields for other requests', async () => {
+      mockRequest.authType = 'user';
+      mockRequest.user = { id: 'user-1' };
+
+      await lastValueFrom(
+        interceptor.intercept(mockExecutionContext, mockCallHandler),
+      );
+
+      const [, fields] = rs.mocked(mockChildLogger.info!).mock.calls[0] as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(fields).not.toHaveProperty('apiKeyId');
+      expect(fields).not.toHaveProperty('apiKeyConsumer');
     });
 
     it('should default to 500 status code on error when not set', async () => {

@@ -207,21 +207,104 @@ describe('GCPSecretsProvider', () => {
   });
 
   describe('list', () => {
-    it('should list all secrets for project', async () => {
+    const createProvider = (
+      projectName: string,
+      serviceName: string,
+    ): GCPSecretsProvider =>
+      new GCPSecretsProvider({
+        projectName,
+        serviceName,
+        providerConfig: { projectId: 'gcp-project-123' },
+      });
+
+    const mockSecretIds = (secretIds: string[]): void => {
       mockListSecrets.mockResolvedValue([
-        [
-          { name: 'projects/p/secrets/testproject-shared-DATABASE_URL' },
-          { name: 'projects/p/secrets/testproject-test-service-API_KEY' },
-          { name: 'projects/p/secrets/testproject-shared-REDIS_HOST' },
-        ],
+        secretIds.map((id) => ({ name: `projects/p/secrets/${id}` })),
+      ]);
+    };
+
+    it('should list shared and own service-scoped keys', async () => {
+      mockSecretIds([
+        'testproject-shared-DATABASE_URL',
+        'testproject-test-service-ADMIN_EMAILS',
+        'testproject-shared-REDIS_HOST',
       ]);
 
       const result = await provider.list();
 
-      // The key extraction splits by '-' and takes everything after the first two parts (projectName and scope)
-      // So 'testproject-shared-DATABASE_URL' becomes 'DATABASE_URL'
-      // and 'testproject-test-service-API_KEY' becomes 'service-API_KEY' (because scope is 'test')
-      expect(result).toEqual(['DATABASE_URL', 'service-API_KEY', 'REDIS_HOST']);
+      expect(result).toEqual(['DATABASE_URL', 'ADMIN_EMAILS', 'REDIS_HOST']);
+      expect(mockListSecrets).toHaveBeenCalledWith({
+        parent: 'projects/gcp-project-123',
+        filter: 'labels.project-name=testproject',
+      });
+    });
+
+    it('should skip secrets of other services', async () => {
+      mockSecretIds([
+        'testproject-shared-JWT_SECRET',
+        'testproject-offers-service-DATABASE_URL',
+        'testproject-test-service-DATABASE_URL',
+      ]);
+
+      const result = await provider.list();
+
+      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
+    });
+
+    it('should not pick up secrets of a service whose name it prefixes (auth vs auth-service)', async () => {
+      mockSecretIds([
+        'testproject-auth-service-DATABASE_URL',
+        'testproject-auth-ADMIN_EMAILS',
+      ]);
+
+      const result = await createProvider('testproject', 'auth').list();
+
+      expect(result).toEqual(['ADMIN_EMAILS']);
+    });
+
+    it('should not pick up secrets of a service whose name it prefixes (auth-service vs auth-service-v2)', async () => {
+      mockSecretIds([
+        'testproject-auth-service-v2-DATABASE_URL',
+        'testproject-auth-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('testproject', 'auth-service').list();
+
+      expect(result).toEqual(['DATABASE_URL']);
+    });
+
+    it('should handle a project name with hyphens', async () => {
+      mockSecretIds([
+        'my-app-shared-JWT_SECRET',
+        'my-app-auth-service-DATABASE_URL',
+        'my-app-offers-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('my-app', 'auth-service').list();
+
+      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
+    });
+
+    it('should list a key present in both scopes once', async () => {
+      mockSecretIds([
+        'testproject-test-service-REDIS_HOST',
+        'testproject-shared-REDIS_HOST',
+      ]);
+
+      const result = await provider.list();
+
+      expect(result).toEqual(['REDIS_HOST']);
+    });
+
+    it('should list only shared keys when no service name is set', async () => {
+      mockSecretIds([
+        'testproject-shared-JWT_SECRET',
+        'testproject-auth-service-DATABASE_URL',
+      ]);
+
+      const result = await createProvider('testproject', '').list();
+
+      expect(result).toEqual(['JWT_SECRET']);
     });
 
     it('should handle empty secret list', async () => {

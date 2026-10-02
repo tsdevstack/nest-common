@@ -10,10 +10,10 @@ import { SecretsModule } from '../secrets/secrets.module';
  * available throughout your application.
  *
  * ## Features
- * - Dynamic JWT claim extraction from Kong headers
+ * - Kong trust token verified before any identity header is read
+ * - Users from the OIDC plugin's X-Userinfo, partner API keys from the key plugin
  * - Service-to-service API key authentication
- * - @Public() decorator for public endpoints
- * - Network isolation security (trusts Kong headers only)
+ * - @Public() and @PartnerApi() enforcement
  *
  * @example
  * ```typescript

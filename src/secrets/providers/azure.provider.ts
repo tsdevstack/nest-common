@@ -9,6 +9,8 @@ import {
   CloudProviderConfig,
   CacheEntry,
 } from './cloud-provider.interface';
+import { extractScopedSecretKey } from './extract-scoped-secret-key';
+import { AZURE_SECRET_KEY_PATTERN } from '../secrets.constants';
 
 export class AzureSecretsProvider implements CloudSecretsProvider {
   private client: SecretClient;
@@ -135,21 +137,31 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
 
   /**
    * List all secrets for this service (both service-scoped and shared)
+   *
+   * Secrets of other services in the project are skipped. A key that exists
+   * in both scopes is listed once (get() returns the shared value).
    */
   async list(): Promise<string[]> {
-    const secrets: string[] = [];
+    const scopePrefixes = this.buildScopePrefixes();
+    const keys = new Set<string>();
 
     try {
       // List all secret properties
       for await (const properties of this.client.listPropertiesOfSecrets()) {
         // Filter by project-name tag
         if (properties.tags?.['project-name'] === this.projectName) {
-          const key = this.extractKeyFromSecretName(properties.name);
-          secrets.push(key);
+          const azureKey = extractScopedSecretKey(
+            properties.name,
+            scopePrefixes,
+            AZURE_SECRET_KEY_PATTERN,
+          );
+          if (azureKey !== null) {
+            keys.add(this.reverseTransformKey(azureKey));
+          }
         }
       }
 
-      return secrets;
+      return [...keys];
     } catch (error) {
       throw new Error(
         `Failed to list secrets from Azure: ${error instanceof Error ? error.message : String(error)}`,
@@ -198,33 +210,13 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Extract key from secret name and reverse transform
-   * Input: "tsdevstack-auth-service-DATABASE-URL" or "tsdevstack-shared-DATABASE-URL"
-   * Output: "DATABASE_URL"
+   * Name prefixes of the scopes list() returns: shared, and this service when
+   * a service name is set. Built like the names get() reads (only the key is
+   * transformed, so the prefix is `${projectName}-${scope}-`).
    */
-  private extractKeyFromSecretName(secretName: string): string {
-    // Remove the project name prefix first
-    const withoutProject = secretName.substring(this.projectName.length + 1);
-
-    let key: string;
-
-    // Check if it starts with the service name
-    if (withoutProject.startsWith(`${this.serviceName}-`)) {
-      key = withoutProject.substring(this.serviceName.length + 1);
-    } else if (withoutProject.startsWith('shared-')) {
-      // Otherwise assume it's shared scope
-      key = withoutProject.substring('shared-'.length);
-    } else {
-      // Fallback: just return the remaining part after first dash
-      const firstDashIndex = withoutProject.indexOf('-');
-      key =
-        firstDashIndex >= 0
-          ? withoutProject.substring(firstDashIndex + 1)
-          : withoutProject;
-    }
-
-    // Reverse transform hyphens back to underscores
-    return this.reverseTransformKey(key);
+  private buildScopePrefixes(): string[] {
+    const scopes = this.serviceName ? ['shared', this.serviceName] : ['shared'];
+    return scopes.map((scope) => this.buildSecretName('', scope));
   }
 
   /**
