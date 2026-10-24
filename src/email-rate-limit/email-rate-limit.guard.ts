@@ -14,6 +14,7 @@ import {
 } from './email-rate-limit.decorator';
 import { RedisService } from '../redis/redis.service';
 import { hashEmailForKey } from './hash-email-for-key';
+import { getRateLimitScope } from '../rate-limit/get-rate-limit-scope';
 
 interface EmailRateLimitResult {
   success: boolean;
@@ -43,7 +44,11 @@ export class EmailRateLimitGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest<Request>();
-    const result = await this.checkEmailRateLimit(request, options);
+    const result = await this.checkEmailRateLimit(
+      request,
+      options,
+      getRateLimitScope(context),
+    );
 
     if (!result.success) {
       const message =
@@ -68,6 +73,7 @@ export class EmailRateLimitGuard implements CanActivate {
   private async checkEmailRateLimit(
     request: Request,
     options: EmailRateLimitOptions,
+    scope: string,
   ): Promise<EmailRateLimitResult> {
     const {
       windowMs = 15 * 60 * 1000, // 15 minutes default
@@ -93,7 +99,9 @@ export class EmailRateLimitGuard implements CanActivate {
     // Hashed, not plaintext — the address must never become a Redis key name
     const emailHash = hashEmailForKey(emailValue);
     const window = Math.floor(Date.now() / windowMs);
-    const windowKey = `email_rate_limit:${emailHash}:${window}`;
+    // Each route has its own counter: failed logins don't use up the
+    // password reset limit of the same address
+    const windowKey = `email_rate_limit:${scope}:${emailHash}:${window}`;
 
     try {
       const redis = this.redisService.getClient();

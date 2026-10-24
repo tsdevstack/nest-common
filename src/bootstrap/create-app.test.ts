@@ -48,6 +48,7 @@ rs.mock('../open-api-docs/create-swagger-document', () => ({
 }));
 
 import { createApp } from './create-app';
+import { NestLoggerAdapter } from '../logging/nest-logger-adapter';
 
 describe('createApp', () => {
   const originalEnv = process.env;
@@ -69,7 +70,19 @@ describe('createApp', () => {
       swagger: { title: 'Test', description: 'Test' },
     });
 
-    expect(mockCreate).toHaveBeenCalledWith(MockModule);
+    expect(mockCreate).toHaveBeenCalledWith(MockModule, expect.anything());
+  });
+
+  it("should route Nest's own logger through LoggerService", async () => {
+    await createApp(class {}, {
+      port: 3000,
+      globalPrefix: 'api',
+      swagger: { title: 'Test', description: 'Test' },
+    });
+
+    expect(mockCreate).toHaveBeenCalledWith(expect.anything(), {
+      logger: expect.any(NestLoggerAdapter),
+    });
   });
 
   it('should set global prefix with excluded routes', async () => {

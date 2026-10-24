@@ -75,6 +75,44 @@ describe('HealthService', () => {
     });
   });
 
+  describe('Redis check by default', () => {
+    const indicator = (available: boolean): RedisHealthIndicator =>
+      ({
+        isAvailable: rs.fn().mockReturnValue(available),
+        check: rs.fn().mockResolvedValue({ status: 'down' }),
+      }) as unknown as RedisHealthIndicator;
+
+    it('should check Redis when the app has it and no option is set', async () => {
+      const redis = indicator(true);
+      const service = new HealthService({}, redis);
+
+      const result = await service.check();
+
+      expect(redis.check).toHaveBeenCalled();
+      expect(result.checks.redis).toEqual({ status: 'down' });
+      expect(result.status).toBe('degraded');
+    });
+
+    it('should not check Redis when the app has none', async () => {
+      const redis = indicator(false);
+      const service = new HealthService({}, redis);
+
+      const result = await service.check();
+
+      expect(redis.check).not.toHaveBeenCalled();
+      expect(result.checks).not.toHaveProperty('redis');
+    });
+
+    it('should not check Redis with redis: false', async () => {
+      const redis = indicator(true);
+      const service = new HealthService({ redis: false }, redis);
+
+      await service.check();
+
+      expect(redis.check).not.toHaveBeenCalled();
+    });
+  });
+
   describe('without indicators', () => {
     it('should return ok status with no checks when no indicators configured', async () => {
       const minimalService = new HealthService({}, undefined, undefined);

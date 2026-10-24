@@ -6,14 +6,12 @@ import type { CloudProviderConfig } from './cloud-provider.interface';
 const mockGetSecret = rs.fn();
 const mockSetSecret = rs.fn();
 const mockBeginDeleteSecret = rs.fn();
-const mockListPropertiesOfSecrets = rs.fn();
 
 rs.mock('@azure/keyvault-secrets', () => ({
   SecretClient: class {
     getSecret = mockGetSecret;
     setSecret = mockSetSecret;
     beginDeleteSecret = mockBeginDeleteSecret;
-    listPropertiesOfSecrets = mockListPropertiesOfSecrets;
   },
 }));
 
@@ -269,182 +267,6 @@ describe('AzureSecretsProvider', () => {
     });
   });
 
-  describe('list', () => {
-    const createProvider = (
-      projectName: string,
-      serviceName: string,
-    ): AzureSecretsProvider =>
-      new AzureSecretsProvider({
-        projectName,
-        serviceName,
-        providerConfig: { keyVaultName: 'test-keyvault' },
-      });
-
-    const mockSecretProperties = (
-      secretProperties: Array<{ name: string; tags?: Record<string, string> }>,
-    ): void => {
-      mockListPropertiesOfSecrets.mockReturnValue({
-        [Symbol.asyncIterator]: async function* () {
-          for (const prop of secretProperties) {
-            yield prop;
-          }
-        },
-      });
-    };
-
-    // Secrets of one project, all tagged with its project name
-    const mockProjectSecretNames = (
-      projectName: string,
-      names: string[],
-    ): void => {
-      mockSecretProperties(
-        names.map((name) => ({ name, tags: { 'project-name': projectName } })),
-      );
-    };
-
-    it('should list shared and own service-scoped keys of the project', async () => {
-      mockSecretProperties([
-        {
-          name: 'testproject-shared-DATABASE-URL',
-          tags: { 'project-name': 'testproject' },
-        },
-        {
-          name: 'testproject-test-service-ADMIN-EMAILS',
-          tags: { 'project-name': 'testproject' },
-        },
-        {
-          name: 'otherproject-shared-OTHER',
-          tags: { 'project-name': 'otherproject' },
-        },
-      ]);
-
-      const result = await provider.list();
-
-      // Should only include testproject secrets and reverse transform hyphens to underscores
-      expect(result).toEqual(['DATABASE_URL', 'ADMIN_EMAILS']);
-    });
-
-    it('should skip secrets without the project-name tag', async () => {
-      mockSecretProperties([
-        { name: 'testproject-shared-JWT-SECRET' },
-        {
-          name: 'testproject-shared-REDIS-HOST',
-          tags: { 'project-name': 'testproject' },
-        },
-      ]);
-
-      const result = await provider.list();
-
-      expect(result).toEqual(['REDIS_HOST']);
-    });
-
-    it('should skip secrets of other services', async () => {
-      mockProjectSecretNames('tsdevstack', [
-        'tsdevstack-shared-JWT-SECRET',
-        'tsdevstack-offers-service-DATABASE-URL',
-        'tsdevstack-auth-service-DATABASE-URL',
-      ]);
-
-      const result = await createProvider('tsdevstack', 'auth-service').list();
-
-      // Not SERVICE_DATABASE_URL from the offers-service secret
-      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
-    });
-
-    it('should not pick up secrets of a service whose name it prefixes (auth vs auth-service)', async () => {
-      mockProjectSecretNames('testproject', [
-        'testproject-auth-service-DATABASE-URL',
-        'testproject-auth-ADMIN-EMAILS',
-      ]);
-
-      const result = await createProvider('testproject', 'auth').list();
-
-      expect(result).toEqual(['ADMIN_EMAILS']);
-    });
-
-    it('should not pick up secrets of a service whose name it prefixes (auth-service vs auth-service-v2)', async () => {
-      mockProjectSecretNames('testproject', [
-        'testproject-auth-service-v2-DATABASE-URL',
-        'testproject-auth-service-DATABASE-URL',
-      ]);
-
-      const result = await createProvider('testproject', 'auth-service').list();
-
-      expect(result).toEqual(['DATABASE_URL']);
-    });
-
-    it('should handle a project name with hyphens', async () => {
-      mockProjectSecretNames('my-app', [
-        'my-app-shared-JWT-SECRET',
-        'my-app-auth-service-DATABASE-URL',
-        'my-app-offers-service-DATABASE-URL',
-      ]);
-
-      const result = await createProvider('my-app', 'auth-service').list();
-
-      expect(result).toEqual(['JWT_SECRET', 'DATABASE_URL']);
-    });
-
-    it('should reverse every hyphen of a multi-hyphen key', async () => {
-      mockProjectSecretNames('testproject', [
-        'testproject-shared-JWT-PRIVATE-KEY-CURRENT',
-        'testproject-test-service-AUTH-SERVICE-API-KEY-2',
-      ]);
-
-      const result = await provider.list();
-
-      expect(result).toEqual([
-        'JWT_PRIVATE_KEY_CURRENT',
-        'AUTH_SERVICE_API_KEY_2',
-      ]);
-    });
-
-    it('should list a key present in both scopes once', async () => {
-      mockProjectSecretNames('testproject', [
-        'testproject-test-service-REDIS-HOST',
-        'testproject-shared-REDIS-HOST',
-      ]);
-
-      const result = await provider.list();
-
-      expect(result).toEqual(['REDIS_HOST']);
-    });
-
-    it('should list only shared keys when no service name is set', async () => {
-      mockProjectSecretNames('testproject', [
-        'testproject-shared-JWT-SECRET',
-        'testproject-auth-service-DATABASE-URL',
-      ]);
-
-      const result = await createProvider('testproject', '').list();
-
-      expect(result).toEqual(['JWT_SECRET']);
-    });
-
-    it('should handle empty secret list', async () => {
-      mockListPropertiesOfSecrets.mockReturnValue({
-        [Symbol.asyncIterator]: async function* () {},
-      });
-
-      const result = await provider.list();
-
-      expect(result).toEqual([]);
-    });
-
-    it('should throw error on failure', async () => {
-      mockListPropertiesOfSecrets.mockReturnValue({
-        // eslint-disable-next-line require-yield
-        [Symbol.asyncIterator]: async function* () {
-          throw new Error('Access denied');
-        },
-      });
-
-      await expect(provider.list()).rejects.toThrow(
-        'Failed to list secrets from Azure',
-      );
-    });
-  });
-
   describe('exists', () => {
     it('should return true when shared secret exists', async () => {
       mockGetSecret.mockResolvedValue({ value: 'value' });
@@ -491,21 +313,6 @@ describe('AzureSecretsProvider', () => {
       expect(mockGetSecret).toHaveBeenCalledWith(
         'testproject-shared-DATABASE-URL-MAIN',
       );
-    });
-
-    it('should reverse transform when extracting keys from list', async () => {
-      mockListPropertiesOfSecrets.mockReturnValue({
-        [Symbol.asyncIterator]: async function* () {
-          yield {
-            name: 'testproject-shared-DATABASE-URL-MAIN',
-            tags: { 'project-name': 'testproject' },
-          };
-        },
-      });
-
-      const result = await provider.list();
-
-      expect(result).toEqual(['DATABASE_URL_MAIN']);
     });
   });
 });

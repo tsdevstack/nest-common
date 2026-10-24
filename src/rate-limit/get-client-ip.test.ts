@@ -13,6 +13,28 @@ describe('getClientIp', () => {
       ).toBe('203.0.113.7');
     });
 
+    it('should prefer X-Tsdevstack-Real-IP (the visitor a trusted frontend named) through Kong', () => {
+      expect(
+        getClientIp({
+          headers: {
+            'x-tsdevstack-real-ip': '198.51.100.23',
+            'x-real-ip': '203.0.113.7',
+          },
+          socket: { remoteAddress: '10.0.0.5' },
+          viaGateway: true,
+        }),
+      ).toBe('198.51.100.23');
+    });
+
+    it('should ignore X-Tsdevstack-Real-IP without the gateway flag', () => {
+      expect(
+        getClientIp({
+          headers: { 'x-tsdevstack-real-ip': '198.51.100.23' },
+          socket: { remoteAddress: '10.0.0.5' },
+        }),
+      ).toBe('10.0.0.5');
+    });
+
     it('should use the socket address without the gateway flag', () => {
       expect(
         getClientIp({
@@ -43,6 +65,15 @@ describe('getClientIp', () => {
   });
 
   describe('Edge cases', () => {
+    it('should fall back to X-Real-IP when Kong sent no X-Tsdevstack-Real-IP', () => {
+      expect(
+        getClientIp({
+          headers: { 'x-tsdevstack-real-ip': '  ', 'x-real-ip': '203.0.113.7' },
+          viaGateway: true,
+        }),
+      ).toBe('203.0.113.7');
+    });
+
     it('should fall back to the socket address when Kong sent no X-Real-IP', () => {
       expect(
         getClientIp({

@@ -24,13 +24,13 @@ describe('buildStorageConfig', () => {
   });
 
   describe('S3 adapter', () => {
-    it('should return MinIO config when SECRETS_PROVIDER=local', async () => {
+    it('should return the local storage config when SECRETS_PROVIDER=local', async () => {
       process.env.SECRETS_PROVIDER = 'local';
 
       const secrets = createMockSecrets({
         STORAGE_ENDPOINT: 'http://localhost:9000',
-        STORAGE_ACCESS_KEY: 'minioadmin',
-        STORAGE_SECRET_KEY: 'minioadmin',
+        STORAGE_ACCESS_KEY: 'rustfsadmin',
+        STORAGE_SECRET_KEY: 'rustfsadmin',
         STORAGE_FORCE_PATH_STYLE: 'true',
       });
 
@@ -38,7 +38,7 @@ describe('buildStorageConfig', () => {
 
       expect(config).toEqual({
         endpoint: 'http://localhost:9000',
-        credentials: { accessKey: 'minioadmin', secretKey: 'minioadmin' },
+        credentials: { accessKey: 'rustfsadmin', secretKey: 'rustfsadmin' },
         forcePathStyle: true,
       });
     });

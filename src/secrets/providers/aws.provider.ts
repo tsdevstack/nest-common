@@ -5,15 +5,12 @@ import {
   PutSecretValueCommand,
   DeleteSecretCommand,
   DescribeSecretCommand,
-  ListSecretsCommand,
 } from '@aws-sdk/client-secrets-manager';
 import {
   CloudSecretsProvider,
   CloudProviderConfig,
   CacheEntry,
 } from './cloud-provider.interface';
-import { extractScopedSecretKey } from './extract-scoped-secret-key';
-import { CLOUD_SECRET_KEY_PATTERN } from '../secrets.constants';
 
 export class AWSSecretsProvider implements CloudSecretsProvider {
   private client: SecretsManagerClient;
@@ -132,63 +129,6 @@ export class AWSSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to remove secret ${secretName} from AWS: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  /**
-   * List all secrets for this service (both service-scoped and shared)
-   *
-   * Secrets of other services in the project are skipped. A key that exists
-   * in both scopes is listed once (get() returns the shared value).
-   */
-  async list(): Promise<string[]> {
-    const scopePrefixes = this.buildScopePrefixes();
-    const keys = new Set<string>();
-    let nextToken: string | undefined;
-
-    try {
-      do {
-        const response = await this.client.send(
-          new ListSecretsCommand({
-            Filters: [
-              {
-                Key: 'tag-key',
-                Values: ['project-name'],
-              },
-              {
-                Key: 'tag-value',
-                Values: [this.projectName],
-              },
-            ],
-            NextToken: nextToken,
-          }),
-        );
-
-        if (response.SecretList) {
-          for (const secret of response.SecretList) {
-            if (secret.Name) {
-              // Format: {projectName}-{scope}-{KEY}
-              const key = extractScopedSecretKey(
-                secret.Name,
-                scopePrefixes,
-                CLOUD_SECRET_KEY_PATTERN,
-              );
-              if (key !== null) {
-                keys.add(key);
-              }
-            }
-          }
-        }
-
-        nextToken = response.NextToken;
-      } while (nextToken);
-
-      return [...keys];
-    } catch (error) {
-      throw new Error(
-        `Failed to list secrets from AWS: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
     }

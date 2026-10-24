@@ -7,6 +7,7 @@ const {
   mockReadPackageJson,
   mockServerInstance,
   mockCreateServer,
+  mockOverrideLogger,
 } = rs.hoisted(() => {
   const app = {
     close: rs.fn().mockResolvedValue(undefined),
@@ -24,13 +25,25 @@ const {
     }),
     mockServerInstance: server,
     mockCreateServer: rs.fn().mockReturnValue(server),
+    mockOverrideLogger: rs.fn(),
   };
 });
 
 rs.mock('@nestjs/common', () => ({
   Logger: class {
+    static overrideLogger = mockOverrideLogger;
     log = rs.fn();
     error = rs.fn();
+  },
+}));
+
+rs.mock('../logging/logger.service', () => ({
+  LoggerService: class {},
+}));
+
+rs.mock('../logging/nest-logger-adapter', () => ({
+  NestLoggerAdapter: class {
+    readonly isNestLoggerAdapter = true;
   },
 }));
 
@@ -79,7 +92,24 @@ describe('startWorker', () => {
   it('should create application context', async () => {
     const MockModule = class {};
     await startWorker(MockModule);
-    expect(mockCreateApplicationContext).toHaveBeenCalledWith(MockModule);
+    expect(mockCreateApplicationContext).toHaveBeenCalledWith(
+      MockModule,
+      expect.anything(),
+    );
+  });
+
+  it("should route Nest's logger through LoggerService from the first message", async () => {
+    await startWorker(class {});
+
+    const [adapter] = mockOverrideLogger.mock.calls[0] as [unknown];
+    expect(adapter).toMatchObject({ isNestLoggerAdapter: true });
+    expect(mockOverrideLogger.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateApplicationContext.mock.invocationCallOrder[0],
+    );
+    expect(mockCreateApplicationContext).toHaveBeenCalledWith(
+      expect.anything(),
+      { logger: adapter },
+    );
   });
 
   it('should create health server', async () => {

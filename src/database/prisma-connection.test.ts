@@ -51,6 +51,23 @@ describe('createPrismaConnection', () => {
     });
   });
 
+  describe('Pool settings', () => {
+    it('should keep connections for a quiet service and recycle them', () => {
+      createPrismaConnection();
+
+      expect(MockPool).toHaveBeenCalledWith(
+        expect.objectContaining({
+          min: 1,
+          idleTimeoutMillis: 600000,
+          maxLifetimeSeconds: 1800,
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 30000,
+          connectionTimeoutMillis: 10000,
+        }),
+      );
+    });
+  });
+
   describe('Production mode', () => {
     it('should throw if DB_POOL_MAX is not set', () => {
       process.env.NODE_ENV = 'production';
@@ -120,11 +137,11 @@ describe('createPrismaConnection', () => {
       );
     });
 
-    it('should set idle timeout to 30 seconds', () => {
+    it('should set idle timeout to 10 minutes', () => {
       createPrismaConnection();
 
       expect(MockPool).toHaveBeenCalledWith(
-        expect.objectContaining({ idleTimeoutMillis: 30000 }),
+        expect.objectContaining({ idleTimeoutMillis: 600000 }),
       );
     });
 

@@ -1,17 +1,31 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { RedisService } from '../../redis/redis.service';
 import { REDIS_HEALTH_PING_TIMEOUT_MS } from '../../redis/redis.constants';
 import type { HealthIndicatorResult } from '../health.interface';
 
 @Injectable()
 export class RedisHealthIndicator {
-  constructor(private readonly redisService: RedisService) {}
+  // Optional: the indicator is registered by default and only checks Redis
+  // when the app imports RedisModule (global, so its service is visible here)
+  constructor(@Optional() private readonly redisService?: RedisService) {}
+
+  /** Whether the app has Redis (RedisModule imported) */
+  isAvailable(): boolean {
+    return this.redisService !== undefined;
+  }
 
   /**
    * Reports Redis as down when the client is not ready (connecting,
    * reconnecting, closed) or does not answer PING in time.
    */
   async check(): Promise<HealthIndicatorResult> {
+    if (!this.redisService) {
+      return {
+        status: 'down',
+        details: { error: 'RedisModule is not imported' },
+      };
+    }
+
     const client = this.redisService.getClient();
 
     if (!client || client.status !== 'ready') {

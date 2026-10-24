@@ -1,12 +1,16 @@
 import { Injectable, Optional, Inject, OnModuleInit } from '@nestjs/common';
-import type { HealthCheckResult, HealthModuleOptions } from './health.interface';
+import type {
+  HealthCheckResult,
+  HealthModuleOptions,
+} from './health.interface';
 import { RedisHealthIndicator } from './indicators/redis.indicator';
 import { MemoryHealthIndicator } from './indicators/memory.indicator';
 
 @Injectable()
 export class HealthService implements OnModuleInit {
   constructor(
-    @Inject('HEALTH_MODULE_OPTIONS') private readonly options: HealthModuleOptions,
+    @Inject('HEALTH_MODULE_OPTIONS')
+    private readonly options: HealthModuleOptions,
     @Optional() private readonly redisIndicator?: RedisHealthIndicator,
     @Optional() private readonly memoryIndicator?: MemoryHealthIndicator,
   ) {}
@@ -18,11 +22,17 @@ export class HealthService implements OnModuleInit {
   }
 
   async check(): Promise<HealthCheckResult> {
-    const checks: Record<string, { status: 'up' | 'down'; details?: Record<string, unknown> }> = {};
+    const checks: Record<
+      string,
+      { status: 'up' | 'down'; details?: Record<string, unknown> }
+    > = {};
     let overallStatus: 'ok' | 'degraded' | 'down' = 'ok';
 
-    // Redis check
-    if (this.options.redis && this.redisIndicator) {
+    // Redis check: on by default when the app has Redis; `redis: false`
+    // turns it off, `redis: true` checks even without RedisModule (down)
+    const checkRedis =
+      this.options.redis ?? this.redisIndicator?.isAvailable() ?? false;
+    if (checkRedis && this.redisIndicator) {
       const redisResult = await this.redisIndicator.check();
       checks.redis = redisResult;
       if (redisResult.status === 'down') {

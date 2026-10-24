@@ -1,4 +1,12 @@
-import { describe, it, expect, rs, beforeEach, type Mock } from '@rstest/core';
+import {
+  describe,
+  it,
+  expect,
+  rs,
+  beforeEach,
+  afterEach,
+  type Mock,
+} from '@rstest/core';
 
 // Store mock references globally so they can be accessed in tests
 let mockLogger: {
@@ -173,6 +181,63 @@ describe('LoggerService', () => {
           msg: 'child message',
         }),
       );
+    });
+
+    it('should share one pino instance with children and grandchildren', () => {
+      const child = loggerService.child('Child');
+      const grandchild = child.child('Grandchild');
+
+      loggerService.info('root');
+      child.info('child');
+      grandchild.info('grandchild');
+
+      expect(pino).toHaveBeenCalledTimes(1);
+      expect(mockLogger.info).toHaveBeenCalledTimes(3);
+    });
+
+    it('should keep the parent context out of a child', () => {
+      loggerService.setContext('Parent');
+      loggerService.child('Child').info('child message');
+
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ context: 'Child' }),
+      );
+    });
+  });
+
+  describe('output format', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+    });
+
+    it('should write one compact line per entry locally', () => {
+      process.env.NODE_ENV = 'development';
+      new LoggerService().info('hello');
+
+      expect(pino).toHaveBeenCalledWith(
+        expect.objectContaining({
+          transport: {
+            target: 'pino-pretty',
+            options: expect.objectContaining({
+              singleLine: true,
+              messageFormat: '{if context}[{context}] {end}{msg}',
+              ignore: 'pid,hostname,service,context,trace_id,span_id,http',
+            }),
+          },
+        }),
+      );
+    });
+
+    it('should write JSON without a transport in production', () => {
+      process.env.NODE_ENV = 'production';
+      new LoggerService().info('hello');
+
+      const [options] = rs.mocked(pino).mock.calls[0] as unknown as [
+        Record<string, unknown>,
+      ];
+      expect(options).not.toHaveProperty('transport');
     });
   });
 });

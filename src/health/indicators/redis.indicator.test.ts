@@ -79,6 +79,19 @@ describe('RedisHealthIndicator', () => {
     });
   });
 
+  describe('Without RedisModule', () => {
+    it('should report the app has no Redis', () => {
+      expect(new RedisHealthIndicator().isAvailable()).toBe(false);
+    });
+
+    it('should report down instead of throwing when checked anyway', async () => {
+      await expect(new RedisHealthIndicator().check()).resolves.toEqual({
+        status: 'down',
+        details: { error: 'RedisModule is not imported' },
+      });
+    });
+  });
+
   describe('Edge cases', () => {
     it('should return down when PING does not answer in time', async () => {
       rs.useFakeTimers();

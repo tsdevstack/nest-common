@@ -15,15 +15,22 @@ describe('EmailRateLimitGuard', () => {
     multi: ReturnType<typeof rs.fn>;
   };
 
+  class AuthController {
+    login(): void {}
+    forgotPassword(): void {}
+  }
+
   const createMockContext = (
     body: Record<string, unknown> = {},
+    handler: () => void = AuthController.prototype.login,
   ): ExecutionContext => {
     const request = { body };
     return {
       switchToHttp: () => ({
         getRequest: () => request,
       }),
-      getHandler: () => ({}),
+      getHandler: () => handler,
+      getClass: () => AuthController,
     } as unknown as ExecutionContext;
   };
 
@@ -100,7 +107,9 @@ describe('EmailRateLimitGuard', () => {
       const key = mockRedisClient.incr.mock.calls[0][0] as string;
       expect(key).not.toContain('user@example.com');
       expect(key).not.toContain('@');
-      expect(key).toMatch(/^email_rate_limit:[0-9a-f]{32}:\d+$/);
+      expect(key).toMatch(
+        /^email_rate_limit:[\w-]+:\w+\.\w+:[0-9a-f]{32}:\d+$/,
+      );
     });
 
     it('should map casing and whitespace variants to the same counter', async () => {
@@ -127,6 +136,24 @@ describe('EmailRateLimitGuard', () => {
       expect(firstKey).not.toBe(secondKey);
     });
 
+    it('should count each route separately for the same address', async () => {
+      rs.spyOn(reflector, 'get').mockReturnValue({ maxRequests: 3 });
+
+      await guard.canActivate(createMockContext({ email: 'user@example.com' }));
+      await guard.canActivate(
+        createMockContext(
+          { email: 'user@example.com' },
+          AuthController.prototype.forgotPassword,
+        ),
+      );
+
+      const [loginKey] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [forgotKey] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(loginKey).toContain(':AuthController.login:');
+      expect(forgotKey).toContain(':AuthController.forgotPassword:');
+      expect(loginKey).not.toBe(forgotKey);
+    });
+
     it('should use custom emailField', async () => {
       rs.spyOn(reflector, 'get').mockReturnValue({
         maxRequests: 3,
@@ -138,7 +165,9 @@ describe('EmailRateLimitGuard', () => {
       );
 
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
-        expect.stringMatching(/^email_rate_limit:[0-9a-f]{32}:\d+$/),
+        expect.stringMatching(
+          /^email_rate_limit:[\w-]+:\w+\.\w+:[0-9a-f]{32}:\d+$/,
+        ),
       );
     });
   });

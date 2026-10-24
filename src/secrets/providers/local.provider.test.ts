@@ -181,39 +181,6 @@ describe('LocalSecretsProvider', () => {
     });
   });
 
-  describe('getAll', () => {
-    it('should return all secrets for a service', async () => {
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      const secrets = await provider.getAll('auth-service');
-
-      expect(secrets).toEqual({
-        DATABASE_URL: 'postgresql://localhost:5432/auth',
-        JWT_SECRET: 'auth-jwt-secret',
-      });
-    });
-
-    it('should return empty object for unknown service', async () => {
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      const secrets = await provider.getAll('unknown-service');
-
-      expect(secrets).toEqual({});
-    });
-
-    it('should throw error for invalid service config', async () => {
-      const invalidSecrets = {
-        'bad-service': 'not an object',
-      };
-      (fs.readFileSync as ReturnType<typeof rs.fn>).mockReturnValue(
-        JSON.stringify(invalidSecrets),
-      );
-
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      await expect(provider.getAll('bad-service')).rejects.toThrow(
-        'Invalid secrets format',
-      );
-    });
-  });
-
   describe('set', () => {
     it('should update .secrets.user.json and regenerate', async () => {
       (exec as unknown as ReturnType<typeof rs.fn>).mockImplementation(

@@ -42,7 +42,15 @@ if (!REDIS_TEST_URL) {
     let guard: RateLimitGuard;
     let reflector: Reflector;
 
-    const contextForIp = (ip: string): ExecutionContext =>
+    class AuthController {
+      login(): void {}
+      logout(): void {}
+    }
+
+    const contextForIp = (
+      ip: string,
+      handler: () => void = AuthController.prototype.login,
+    ): ExecutionContext =>
       ({
         switchToHttp: () => ({
           getRequest: () => ({
@@ -50,8 +58,8 @@ if (!REDIS_TEST_URL) {
             socket: { remoteAddress: ip },
           }),
         }),
-        getHandler: () => ({}),
-        getClass: () => ({}),
+        getHandler: () => handler,
+        getClass: () => AuthController,
       }) as unknown as ExecutionContext;
 
     beforeAll(async () => {
@@ -123,6 +131,27 @@ if (!REDIS_TEST_URL) {
         await guard.canActivate(contextForIp('10.0.0.3'));
         await guard.canActivate(contextForIp('10.0.0.4'));
 
+        expect(await redis.keys('rate_limit:*')).toHaveLength(2);
+      });
+
+      it('should not let one route use up the limit of another', async () => {
+        rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+          maxRequests: 2,
+          windowMs: 60000,
+        });
+
+        await guard.canActivate(contextForIp('10.0.0.5'));
+        await guard.canActivate(contextForIp('10.0.0.5'));
+        await expect(
+          guard.canActivate(contextForIp('10.0.0.5')),
+        ).rejects.toThrow(HttpException);
+
+        // Same client, other route: its own counter
+        await expect(
+          guard.canActivate(
+            contextForIp('10.0.0.5', AuthController.prototype.logout),
+          ),
+        ).resolves.toBe(true);
         expect(await redis.keys('rate_limit:*')).toHaveLength(2);
       });
     });

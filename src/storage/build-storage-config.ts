@@ -13,7 +13,7 @@ export async function buildStorageConfig(
       const secretsProvider = process.env.SECRETS_PROVIDER;
 
       if (secretsProvider === 'local') {
-        // MinIO: read connection details from secrets
+        // Local object storage (RustFS): read connection details from secrets
         const endpoint = await secrets.get('STORAGE_ENDPOINT');
         const accessKey = await secrets.get('STORAGE_ACCESS_KEY');
         const secretKey = await secrets.get('STORAGE_SECRET_KEY');

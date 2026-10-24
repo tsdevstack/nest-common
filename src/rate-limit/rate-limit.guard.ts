@@ -14,6 +14,7 @@ import type { AuthType } from '../auth/auth-user.interface';
 import { RATE_LIMIT_KEY, RateLimitOptions } from './rate-limit.decorator';
 import { hashApiKeyForKey } from './hash-api-key-for-key';
 import { getClientIp } from './get-client-ip';
+import { getRateLimitScope } from './get-rate-limit-scope';
 
 interface RequestWithRateLimit extends Request {
   rateLimit?: {
@@ -101,9 +102,14 @@ export class RateLimitGuard implements CanActivate {
       maxRequests = 100,
     } = options;
 
+    // Each route has its own counter (getRateLimitScope). A custom key is
+    // used as is, so a custom generator can share a counter across routes.
     const key = this.generateKey(context, options);
+    const scope = options.customKeyGenerator
+      ? ''
+      : `${getRateLimitScope(context)}:`;
     const window = Math.floor(Date.now() / windowMs);
-    const windowKey = `rate_limit:${key}:${window}`;
+    const windowKey = `rate_limit:${scope}${key}:${window}`;
 
     try {
       const redis = this.redisService.getClient();

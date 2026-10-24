@@ -90,7 +90,6 @@ describe('SecretsService', () => {
 
       const forcedProvider: SecretsProvider = {
         get: rs.fn(),
-        getAll: rs.fn(),
         set: rs.fn(),
         delete: rs.fn(),
         clearCache: rs.fn(),
@@ -130,6 +129,35 @@ describe('SecretsService', () => {
 
       expect(mockLocalProvider.get).toHaveBeenCalledWith('MY_SECRET');
       expect(result).toBe('secret-value');
+    });
+
+    it("should read API_KEY as this service's {SERVICE}_API_KEY", async () => {
+      process.env.SECRETS_PROVIDER = 'local';
+      (mockLocalProvider.get as ReturnType<typeof rs.fn>).mockResolvedValue(
+        'service-key',
+      );
+
+      const service = new SecretsService({ serviceName: 'auth-service' });
+      const result = await service.get('API_KEY');
+
+      expect(mockLocalProvider.get).toHaveBeenCalledWith(
+        'AUTH_SERVICE_API_KEY',
+      );
+      expect(result).toBe('service-key');
+    });
+
+    it('should leave other keys ending in _API_KEY unchanged', async () => {
+      process.env.SECRETS_PROVIDER = 'local';
+      (mockLocalProvider.get as ReturnType<typeof rs.fn>).mockResolvedValue(
+        'other-key',
+      );
+
+      const service = new SecretsService({ serviceName: 'bff-service' });
+      await service.get('AUTH_SERVICE_API_KEY');
+
+      expect(mockLocalProvider.get).toHaveBeenCalledWith(
+        'AUTH_SERVICE_API_KEY',
+      );
     });
   });
 

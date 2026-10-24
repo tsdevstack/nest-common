@@ -150,45 +150,6 @@ export class LocalSecretsProvider implements SecretsProvider {
   }
 
   /**
-   * Get all secrets for a service
-   *
-   * All references are pre-resolved in .secrets.local.json, so we just load the values directly.
-   * No need to resolve "secrets" array - it doesn't exist in the final merged file.
-   *
-   * Note: All secrets are now flat (no nested objects like REDIS)
-   */
-  async getAll(serviceName: string): Promise<Record<string, string>> {
-    const serviceConfig = this.secrets[serviceName];
-
-    if (!serviceConfig) {
-      // Return empty object if service has no secrets defined
-      // This allows services to optionally have secrets
-      return {};
-    }
-
-    if (typeof serviceConfig !== 'object') {
-      throw new Error(
-        `Invalid secrets format for "${serviceName}". Expected object, got ${typeof serviceConfig}`,
-      );
-    }
-
-    const result: Record<string, string> = {};
-
-    // Load all service values - all references are already resolved
-    for (const [key, value] of Object.entries(serviceConfig)) {
-      if (typeof value === 'string') {
-        result[key] = value;
-      } else {
-        throw new Error(
-          `Invalid value for "${key}" in "${serviceName}". Expected string, got ${typeof value}`,
-        );
-      }
-    }
-
-    return result;
-  }
-
-  /**
    * Get provider name
    */
   getName(): string {

@@ -16,9 +16,15 @@ describe('RateLimitGuard', () => {
     multi: ReturnType<typeof rs.fn>;
   };
 
+  class AuthController {
+    login(): void {}
+    refreshToken(): void {}
+  }
+
   const createMockContext = (
     headers: Record<string, string> = {},
     extra: Record<string, unknown> = {},
+    handler: () => void = AuthController.prototype.login,
   ): ExecutionContext => {
     const request = {
       headers,
@@ -29,8 +35,8 @@ describe('RateLimitGuard', () => {
       switchToHttp: () => ({
         getRequest: () => request,
       }),
-      getHandler: () => ({}),
-      getClass: () => ({}),
+      getHandler: () => handler,
+      getClass: () => AuthController,
     } as unknown as ExecutionContext;
   };
 
@@ -433,6 +439,79 @@ describe('RateLimitGuard', () => {
       expect(mockRedisClient.incr).toHaveBeenCalledWith(
         expect.stringContaining('custom-key'),
       );
+    });
+
+    it('should use a custom key as is, so routes can share it on purpose', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        customKeyGenerator: () => 'tenant:42',
+      });
+
+      await guard.canActivate(createMockContext());
+      await guard.canActivate(
+        createMockContext({}, {}, AuthController.prototype.refreshToken),
+      );
+
+      const [first] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [second] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(first).toMatch(/^rate_limit:tenant:42:\d+$/);
+      expect(second).toBe(first);
+    });
+  });
+
+  describe('Counter per route', () => {
+    it('should put the service, controller and handler in the key', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+      });
+
+      await guard.canActivate(createMockContext());
+
+      const [key] = mockRedisClient.incr.mock.calls[0] as [string];
+      expect(key).toMatch(
+        /^rate_limit:[\w-]+:AuthController\.login:ip:127\.0\.0\.1:\d+$/,
+      );
+    });
+
+    it('should count each route separately for the same client', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+      });
+
+      await guard.canActivate(createMockContext());
+      await guard.canActivate(
+        createMockContext({}, {}, AuthController.prototype.refreshToken),
+      );
+
+      const [loginKey] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [refreshKey] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(loginKey).toContain(':AuthController.login:ip:127.0.0.1:');
+      expect(refreshKey).toContain(
+        ':AuthController.refreshToken:ip:127.0.0.1:',
+      );
+    });
+
+    it('should count user limits per route too', async () => {
+      rs.spyOn(reflector, 'getAllAndOverride').mockReturnValue({
+        maxRequests: 10,
+        keyGenerator: 'userId',
+      });
+
+      await guard.canActivate(
+        createMockContext({}, { authType: 'user', user: { id: 'u1' } }),
+      );
+      await guard.canActivate(
+        createMockContext(
+          {},
+          { authType: 'user', user: { id: 'u1' } },
+          AuthController.prototype.refreshToken,
+        ),
+      );
+
+      const [first] = mockRedisClient.incr.mock.calls[0] as [string];
+      const [second] = mockRedisClient.incr.mock.calls[1] as [string];
+      expect(first).toContain(':AuthController.login:user:u1:');
+      expect(second).toContain(':AuthController.refreshToken:user:u1:');
     });
   });
 

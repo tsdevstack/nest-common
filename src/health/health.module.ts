@@ -11,6 +11,7 @@ import type { HealthModuleOptions } from './health.interface';
   providers: [
     HealthService,
     MemoryHealthIndicator,
+    RedisHealthIndicator,
     {
       provide: 'HEALTH_MODULE_OPTIONS',
       useValue: {},
@@ -22,8 +23,8 @@ export class HealthModule {
   static forRoot(options: HealthModuleOptions = {}): DynamicModule {
     const providers: Provider[] = [HealthService, MemoryHealthIndicator];
 
-    // Only include Redis indicator if redis option is enabled
-    if (options.redis) {
+    // Redis is checked when the app has Redis, unless `redis: false`
+    if (options.redis !== false) {
       providers.push(RedisHealthIndicator);
     }
 

@@ -4,6 +4,8 @@ import type { SecretsConfig } from './secrets.interface';
 import { LocalSecretsProvider } from './providers/local.provider';
 import { SecretsProviderFactory } from './providers/provider-factory';
 import { CloudProviderAdapter } from './providers/cloud-provider-adapter';
+import { buildServiceApiKeyName } from './build-service-api-key-name';
+import { SERVICE_API_KEY_ALIAS } from './secrets.constants';
 
 /**
  * Secrets Service
@@ -41,11 +43,15 @@ export class SecretsService {
     this.provider = this.config.forceProvider || this.detectProvider();
 
     // Set service name on provider for scoped secret access
-    if ('setServiceName' in this.provider && typeof this.provider.setServiceName === 'function') {
-      (this.provider as LocalSecretsProvider).setServiceName(this.config.serviceName);
+    if (
+      'setServiceName' in this.provider &&
+      typeof this.provider.setServiceName === 'function'
+    ) {
+      (this.provider as LocalSecretsProvider).setServiceName(
+        this.config.serviceName,
+      );
     }
   }
-
 
   /**
    * Get the current provider
@@ -58,12 +64,20 @@ export class SecretsService {
    * Get a single secret by key with caching
    * Supports runtime secret refresh (cached for 1 minute in local provider)
    *
+   * `API_KEY` is this service's own API key, stored as `{SERVICE}_API_KEY`
+   * (`auth-service` → `AUTH_SERVICE_API_KEY`). It is resolved here, above
+   * every provider, so local development and all clouds read the same name.
+   *
    * @param key - The secret key to retrieve
    * @returns The secret value
    * @throws Error if secret not found
    */
   async get(key: string): Promise<string> {
-    return this.provider.get(key);
+    const name =
+      key === SERVICE_API_KEY_ALIAS
+        ? buildServiceApiKeyName(this.config.serviceName)
+        : key;
+    return this.provider.get(name);
   }
 
   /**

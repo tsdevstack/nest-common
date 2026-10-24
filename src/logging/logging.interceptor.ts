@@ -9,6 +9,8 @@ import { tap } from 'rxjs/operators';
 import type { Request, Response } from 'express';
 import { LoggerService } from './logger.service';
 import { isQuietRequestPath } from './is-quiet-request-path';
+import { getErrorStatus } from './get-error-status';
+import { markRequestLoggedError } from './mark-request-logged-error';
 import type {
   AuthenticatedApiKey,
   AuthType,
@@ -44,53 +46,56 @@ export class LoggingInterceptor implements NestInterceptor {
     // Add correlation ID to response headers (trace_id from OTEL handles log correlation)
     response.setHeader('X-Correlation-ID', correlationId);
 
-    const { method, url, ip } = request;
-
-    // Health probes and metrics scrapes are not logged (they keep the
-    // correlation ID)
-    if (isQuietRequestPath(url)) {
-      return next.handle();
-    }
-
-    const userAgent = request.get('user-agent') || '';
+    const { method, url } = request;
+    // Health probes and metrics scrapes hit every service every few seconds:
+    // logged at debug, failures at warn
+    const quiet = isQuietRequestPath(url);
     const startTime = Date.now();
     // Set by AuthGuard (guards run before interceptors); never the raw key
     const keyContext = this.getApiKeyContext(request);
 
-    // Log incoming request (debug level to reduce noise)
-    this.logger.debug('Incoming request', {
-      method,
-      url,
-      ip,
-      userAgent,
-      ...keyContext,
-    });
+    // One entry per request, written when it ends. The request fields are
+    // grouped under http (hidden in the local pretty output, where the
+    // message already says them).
+    const entry = (statusCode: number) => {
+      const duration = Date.now() - startTime;
+      return {
+        message: `${method} ${url} ${statusCode} ${duration}ms`,
+        fields: {
+          http: { method, url, statusCode, duration },
+          correlationId,
+          ...keyContext,
+        },
+      };
+    };
 
     return next.handle().pipe(
       tap({
         next: () => {
-          const duration = Date.now() - startTime;
-          const statusCode = response.statusCode;
-
-          this.logger.info('Request completed', {
-            method,
-            url,
-            statusCode,
-            duration,
-            ...keyContext,
-          });
+          // Nest sets the status (200, 201, @HttpCode) before interceptors run
+          const { message, fields } = entry(response.statusCode);
+          if (quiet) {
+            this.logger.debug(message, fields);
+          } else {
+            this.logger.info(message, fields);
+          }
         },
-        error: (error: Error) => {
-          const duration = Date.now() - startTime;
-          const statusCode = response.statusCode || 500;
+        error: (error: unknown) => {
+          // The exception filter has not set the response status yet
+          const { message, fields } = entry(getErrorStatus(error));
+          const reason = error instanceof Error ? error.message : String(error);
+          // Nest's exception handler would log an unknown error a second time
+          markRequestLoggedError(error);
 
-          this.logger.error('Request failed', error, {
-            method,
-            url,
-            statusCode,
-            duration,
-            ...keyContext,
-          });
+          if (quiet) {
+            this.logger.warn(message, { ...fields, reason });
+          } else if (fields.http.statusCode >= 500) {
+            this.logger.error(message, error, fields);
+          } else {
+            // Client errors (validation, auth, unknown id) are expected
+            // answers: no stack trace, below error level
+            this.logger.warn(message, { ...fields, reason });
+          }
         },
       }),
     );

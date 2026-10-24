@@ -9,8 +9,6 @@ import {
   CloudProviderConfig,
   CacheEntry,
 } from './cloud-provider.interface';
-import { extractScopedSecretKey } from './extract-scoped-secret-key';
-import { AZURE_SECRET_KEY_PATTERN } from '../secrets.constants';
 
 export class AzureSecretsProvider implements CloudSecretsProvider {
   private client: SecretClient;
@@ -130,41 +128,6 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
     } catch (error) {
       throw new Error(
         `Failed to remove secret ${secretName} from Azure: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  /**
-   * List all secrets for this service (both service-scoped and shared)
-   *
-   * Secrets of other services in the project are skipped. A key that exists
-   * in both scopes is listed once (get() returns the shared value).
-   */
-  async list(): Promise<string[]> {
-    const scopePrefixes = this.buildScopePrefixes();
-    const keys = new Set<string>();
-
-    try {
-      // List all secret properties
-      for await (const properties of this.client.listPropertiesOfSecrets()) {
-        // Filter by project-name tag
-        if (properties.tags?.['project-name'] === this.projectName) {
-          const azureKey = extractScopedSecretKey(
-            properties.name,
-            scopePrefixes,
-            AZURE_SECRET_KEY_PATTERN,
-          );
-          if (azureKey !== null) {
-            keys.add(this.reverseTransformKey(azureKey));
-          }
-        }
-      }
-
-      return [...keys];
-    } catch (error) {
-      throw new Error(
-        `Failed to list secrets from Azure: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
     }

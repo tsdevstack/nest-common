@@ -614,6 +614,36 @@ describe('AuthGuard', () => {
         'Server API key is not configured',
       );
     });
+
+    describe('when the secret store cannot return API_KEY (SecretsService throws)', () => {
+      const failingGuard = (): AuthGuard =>
+        new AuthGuard(new Reflector(), {
+          get: rs.fn((key: string) =>
+            key === 'API_KEY'
+              ? Promise.reject(new Error('Secret "API_KEY" not found'))
+              : Promise.resolve(secrets[key]),
+          ),
+        } as unknown as SecretsService);
+
+      it('should reject with 401, not fail with a server error', async () => {
+        const { context } = createContext(
+          CALLER_HEADERS.service,
+          HANDLERS.jwtOnly,
+        );
+        await expect(failingGuard().canActivate(context)).rejects.toThrow(
+          UnauthorizedException,
+        );
+      });
+
+      it('should let a public handler through as anonymous', async () => {
+        const { context, request } = createContext(
+          CALLER_HEADERS.service,
+          HANDLERS.public,
+        );
+        await expect(failingGuard().canActivate(context)).resolves.toBe(true);
+        expect(request.authType).toBeUndefined();
+      });
+    });
   });
 
   describe('Configuration errors', () => {

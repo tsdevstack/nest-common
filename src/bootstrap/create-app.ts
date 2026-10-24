@@ -9,6 +9,8 @@ import {
   createSwaggerDocument,
   SwaggerConfig,
 } from '../open-api-docs/create-swagger-document';
+import { LoggerService } from '../logging/logger.service';
+import { NestLoggerAdapter } from '../logging/nest-logger-adapter';
 
 export interface AppBootstrapOptions {
   port: number | string;
@@ -32,7 +34,11 @@ export async function createApp<T>(
   } = options;
 
   // No validation here - CLI validates at dev/build time
-  const app = await NestFactory.create(AppModule);
+  // Nest's own logger writes through LoggerService: JSON in the cloud, one
+  // line locally, same LOG_LEVEL
+  const app = await NestFactory.create(AppModule, {
+    logger: new NestLoggerAdapter(new LoggerService()),
+  });
 
   // Set global prefix BEFORE versioning
   // Exclude infrastructure endpoints from prefix - they're accessed directly by Prometheus/K8s

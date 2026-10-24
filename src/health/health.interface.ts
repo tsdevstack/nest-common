@@ -16,8 +16,10 @@ export interface HealthCheckResult {
 
 export interface HealthModuleOptions {
   /**
-   * Enable Redis health indicator
-   * Requires RedisModule to be imported
+   * Redis health indicator. Default: on when the app imports RedisModule.
+   * `false` turns it off. The result is reported in the body only: `/health`
+   * answers 200 either way (status `degraded` when Redis is down), so probes
+   * never restart an instance because of Redis.
    */
   redis?: boolean;
 

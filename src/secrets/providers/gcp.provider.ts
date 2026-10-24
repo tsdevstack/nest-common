@@ -5,8 +5,6 @@ import {
   CloudProviderConfig,
   CacheEntry,
 } from './cloud-provider.interface';
-import { extractScopedSecretKey } from './extract-scoped-secret-key';
-import { CLOUD_SECRET_KEY_PATTERN } from '../secrets.constants';
 
 export class GCPSecretsProvider implements CloudSecretsProvider {
   private readonly logger = new Logger('GCPSecretsProvider');
@@ -18,7 +16,6 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
   private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(config: CloudProviderConfig) {
-    console.log('[GCP] Constructor start');
     this.projectName = config.projectName;
     this.serviceName = config.serviceName;
 
@@ -32,25 +29,21 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
       );
     }
 
-    console.log(
-      `[GCP] Initializing for project: ${this.gcpProjectId}, service: ${this.serviceName}`,
+    this.logger.debug(
+      `Initializing for project ${this.gcpProjectId}, service ${this.serviceName}`,
     );
 
     // Initialize GCP Secret Manager client
     // Credentials are automatically loaded from:
     // 1. GOOGLE_APPLICATION_CREDENTIALS env var (pointing to credentials JSON)
     // 2. Application Default Credentials (ADC) in cloud environments
-    console.log('[GCP] Creating SecretManagerServiceClient...');
     this.client = new SecretManagerServiceClient();
-    console.log('[GCP] SecretManagerServiceClient created');
   }
 
   /**
    * Get secret with shared → service-scoped fallback and caching
    */
   async get(key: string): Promise<string | null> {
-    console.log(`[GCP] get() called for: ${key}`);
-
     // Check cache first
     const cached = this.getFromCache(key);
     if (cached !== null) {
@@ -58,27 +51,18 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
       return cached;
     }
 
-    let value: string | null;
+    // Shared scope first: every runtime-read secret lives in shared (the
+    // only service-scoped secret, DATABASE_URL, is injected as an env var
+    // at deploy time and never read here). Scoped-first meant a
+    // guaranteed-404 round-trip on every cache-miss lookup. API_KEY is
+    // resolved to {SERVICE}_API_KEY by SecretsService, for every provider.
+    const sharedScopedName = this.buildSecretName(key, 'shared');
+    let value = await this.fetchSecretFromGCP(sharedScopedName);
 
-    // API_KEY is a special case: always resolve to {SERVICE_NAME}_API_KEY in shared scope
-    // e.g., auth-service asking for API_KEY → AUTH_SERVICE_API_KEY in shared
-    if (key === 'API_KEY') {
-      const sharedKey = `${this.serviceName.toUpperCase().replace(/-/g, '_')}_API_KEY`;
-      const sharedScopedName = this.buildSecretName(sharedKey, 'shared');
-      value = await this.fetchSecretFromGCP(sharedScopedName);
-    } else {
-      // Shared scope first: every runtime-read secret lives in shared (the
-      // only service-scoped secret, DATABASE_URL, is injected as an env var
-      // at deploy time and never read here). Scoped-first meant a
-      // guaranteed-404 round-trip on every cache-miss lookup.
-      const sharedScopedName = this.buildSecretName(key, 'shared');
-      value = await this.fetchSecretFromGCP(sharedScopedName);
-
-      // Fall back to service scope for explicitly scoped secrets
-      if (value === null) {
-        const serviceScopedName = this.buildSecretName(key, this.serviceName);
-        value = await this.fetchSecretFromGCP(serviceScopedName);
-      }
+    // Fall back to service scope for explicitly scoped secrets
+    if (value === null) {
+      const serviceScopedName = this.buildSecretName(key, this.serviceName);
+      value = await this.fetchSecretFromGCP(serviceScopedName);
     }
 
     // Cache the result (including null to avoid repeated lookups)
@@ -164,49 +148,6 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * List all secrets for this service (both service-scoped and shared)
-   *
-   * Secrets of other services in the project are skipped. A key that exists
-   * in both scopes is listed once (get() returns the shared value).
-   */
-  async list(): Promise<string[]> {
-    const parent = `projects/${this.gcpProjectId}`;
-    const scopePrefixes = this.buildScopePrefixes();
-    const keys = new Set<string>();
-
-    try {
-      const [secretsResponse] = await this.client.listSecrets({
-        parent,
-        filter: `labels.project-name=${this.projectName}`,
-      });
-
-      for (const secret of secretsResponse) {
-        if (secret.name) {
-          // Format: projects/{project}/secrets/{projectName}-{scope}-{KEY}
-          const secretId = secret.name.split('/').pop();
-          if (secretId) {
-            const key = extractScopedSecretKey(
-              secretId,
-              scopePrefixes,
-              CLOUD_SECRET_KEY_PATTERN,
-            );
-            if (key !== null) {
-              keys.add(key);
-            }
-          }
-        }
-      }
-
-      return [...keys];
-    } catch (error) {
-      throw new Error(
-        `Failed to list secrets from GCP: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  /**
    * Check if a secret exists (checks both shared and service-scoped)
    */
   async exists(key: string): Promise<boolean> {
@@ -276,13 +217,10 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
     const secretId = this.extractSecretId(secretName);
     const versionName = `${parent}/secrets/${secretId}/versions/latest`;
 
-    console.log(`[GCP] Fetching: ${secretId}`);
-
     try {
       const [version] = await this.client.accessSecretVersion({
         name: versionName,
       });
-      console.log(`[GCP] Fetched: ${secretId}`);
 
       if (!version.payload?.data) {
         return null;
@@ -291,7 +229,6 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
       return version.payload.data.toString();
     } catch (error) {
       const errorCode = (error as { code?: number })?.code;
-      console.log(`[GCP] Error for ${secretId}: code=${errorCode}`);
 
       // NOT_FOUND (5) is expected when secret doesn't exist - don't log
       if (errorCode === 5) {
@@ -301,7 +238,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
       // Log all other errors (permission denied, network, timeout, etc.)
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      console.error(`[GCP] Failed: ${secretId}: ${errorMessage}`);
+      this.logger.error(`Failed to read ${secretId}: ${errorMessage}`);
       return null;
     }
   }

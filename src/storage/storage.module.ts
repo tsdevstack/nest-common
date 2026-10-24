@@ -47,7 +47,7 @@ function deriveStorageAdapter(): StorageAdapterType {
     return 'azure-blob';
   }
 
-  // covers 'aws' and 'local' (MinIO)
+  // covers 'aws' and 'local' (RustFS)
   return 's3';
 }
 

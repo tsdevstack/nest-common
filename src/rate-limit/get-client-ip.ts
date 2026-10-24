@@ -14,9 +14,13 @@ export interface ClientIpRequest {
  * Returns the client address:
  *
  * - Through Kong (`viaGateway`, set by AuthGuard after the trust check):
- *   `X-Real-IP`. Kong always overwrites it with the client address it
- *   resolved from its trusted proxies (nginx `$remote_addr`), so a client
- *   cannot choose it.
+ *   `X-Tsdevstack-Real-IP`, else `X-Real-IP`. Kong's tsdevstack-client-ip
+ *   plugin sets `X-Tsdevstack-Real-IP` on every request: the visitor a
+ *   trusted frontend server named (the frontend calls Kong for its visitors,
+ *   so `X-Real-IP` would be the frontend server for all of them), otherwise
+ *   the address Kong resolved. Kong removes a client-sent value of it, and
+ *   always overwrites `X-Real-IP` with the client address it resolved from
+ *   its trusted proxies (nginx `$remote_addr`), so a client chooses neither.
  * - Otherwise (direct and internal calls, or no AuthGuard ran): the socket
  *   address.
  *
@@ -27,10 +31,12 @@ export interface ClientIpRequest {
  */
 export function getClientIp(request: ClientIpRequest): string {
   if (request.viaGateway === true) {
-    const header = request.headers['x-real-ip'];
-    const realIp = (Array.isArray(header) ? header[0] : header)?.trim();
-    if (realIp) {
-      return realIp;
+    for (const name of ['x-tsdevstack-real-ip', 'x-real-ip']) {
+      const header = request.headers[name];
+      const address = (Array.isArray(header) ? header[0] : header)?.trim();
+      if (address) {
+        return address;
+      }
     }
   }
 

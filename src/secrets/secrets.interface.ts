@@ -5,13 +5,6 @@
  */
 export interface SecretsProvider {
   /**
-   * Get all secrets for a specific service
-   * @param serviceName - The name of the service (e.g., 'auth-service', 'shared')
-   * @returns Object containing all secrets for the service
-   */
-  getAll(serviceName: string): Promise<Record<string, string>>;
-
-  /**
    * Get a single secret by key
    * Supports caching with TTL for performance
    * @param key - The secret key to retrieve
@@ -58,10 +51,7 @@ export type CloudProvider = 'local' | 'aws' | 'gcp' | 'azure';
  * Secrets strategy types
  */
 export type SecretsStrategy =
-  | 'local'
-  | 'aws-secrets-manager'
-  | 'gcp-secret-manager'
-  | 'azure-key-vault';
+  'local' | 'aws-secrets-manager' | 'gcp-secret-manager' | 'azure-key-vault';
 
 /**
  * Configuration for secrets service

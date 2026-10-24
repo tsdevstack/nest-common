@@ -79,14 +79,14 @@ describe('S3StorageProvider', () => {
       expect(p).toBeDefined();
     });
 
-    it('should create provider with MinIO config', () => {
+    it('should create provider with the local storage config', () => {
       const p = new S3StorageProvider({
         bucket: 'my-bucket',
         endpoint: 'http://localhost:9000',
         forcePathStyle: true,
         credentials: {
-          accessKey: 'minioadmin',
-          secretKey: 'minioadmin',
+          accessKey: 'rustfsadmin',
+          secretKey: 'rustfsadmin',
         },
       });
       expect(p).toBeDefined();

@@ -22,7 +22,7 @@ export class CloudProviderAdapter implements SecretsProvider {
 
   /**
    * Get a single secret by key
-   * Delegates to cloud provider's get() which handles service-scoped → shared fallback
+   * Delegates to cloud provider's get() which handles shared → service-scoped fallback
    */
   async get(key: string): Promise<string> {
     const value = await this.cloudProvider.get(key);
@@ -33,35 +33,6 @@ export class CloudProviderAdapter implements SecretsProvider {
       );
     }
     return value;
-  }
-
-  /**
-   * Get all secrets for a service
-   * Lists the keys of this service's scope and the shared scope, then fetches
-   * each value
-   *
-   * Note: This is less efficient than the local provider's getAll()
-   * since cloud providers need to fetch each secret individually.
-   * Consider caching at the application level if this becomes a bottleneck.
-   */
-  async getAll(): Promise<Record<string, string>> {
-    const allSecrets = await this.cloudProvider.list();
-    const result: Record<string, string> = {};
-
-    // list() already returns only this service's and shared keys
-    for (const key of allSecrets) {
-      try {
-        const value = await this.cloudProvider.get(key);
-        if (value !== null) {
-          result[key] = value;
-        }
-      } catch {
-        // Skip secrets that can't be accessed
-        continue;
-      }
-    }
-
-    return result;
   }
 
   /**

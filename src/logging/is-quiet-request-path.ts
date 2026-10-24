@@ -1,10 +1,11 @@
 import { HEALTH_PATH, METRICS_PATH } from '../auth/auth.constants';
 
 /**
- * Whether request logging should be skipped for a path.
+ * Whether a request is a health probe or a metrics scrape.
  *
- * Health probes and Prometheus scrapes hit every service every few seconds;
- * logging them buries real traffic. The query string is ignored.
+ * They hit every service every few seconds; logged at info they would bury
+ * real traffic, so the logging interceptor logs them at debug (failures at
+ * warn). The query string is ignored.
  *
  * @param url - Request URL as Express reports it (path plus query string)
  * @returns true for `/metrics`, `/health` and `/health/...`

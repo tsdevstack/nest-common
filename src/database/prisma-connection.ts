@@ -68,7 +68,18 @@ export function createPrismaConnection(): PrismaConnectionResult {
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     max: poolMax,
-    idleTimeoutMillis: 30000,
+    // Keep one connection (the one opened by waitForDatabase at startup)
+    // and close the others after 10 minutes idle: with 30 s, a quiet
+    // service opened a new connection for nearly every request
+    min: 1,
+    idleTimeoutMillis: 10 * 60 * 1000,
+    // Recycle connections, so a long-lived one that broke silently does not
+    // stay in the pool for good
+    maxLifetimeSeconds: 30 * 60,
+    // TCP keepalive from 30 s idle (the OS default starts after 2 hours):
+    // dead connections are noticed and network idle timers stay fresh
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 30 * 1000,
     connectionTimeoutMillis: 10000,
     ssl: sslConfig,
   });

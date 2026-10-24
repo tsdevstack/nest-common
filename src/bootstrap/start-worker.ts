@@ -2,6 +2,8 @@ import { Type, Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import * as http from 'http';
 import { loadEnvIfExists } from './load-env-if-exists';
+import { LoggerService } from '../logging/logger.service';
+import { NestLoggerAdapter } from '../logging/nest-logger-adapter';
 import { readPackageJson } from '../utils/read-package-json';
 
 interface StartWorkerOptions {
@@ -37,6 +39,11 @@ export async function startWorker<T>(
   // Must happen BEFORE SecretsService instantiation since it needs SECRETS_PROVIDER
   loadEnvIfExists();
 
+  // Nest's logger writes through LoggerService (JSON in the cloud, one line
+  // locally), from the first worker message on
+  const nestLogger = new NestLoggerAdapter(new LoggerService());
+  Logger.overrideLogger(nestLogger);
+
   // 2. Read service metadata from package.json and set SERVICE_NAME
   const packageJson = readPackageJson();
   const serviceName = packageJson.name;
@@ -45,7 +52,9 @@ export async function startWorker<T>(
   logger.log(`Starting worker for ${serviceName}`);
 
   // 3. Create application context
-  const app = await NestFactory.createApplicationContext(WorkerModule);
+  const app = await NestFactory.createApplicationContext(WorkerModule, {
+    logger: nestLogger,
+  });
 
   // 4. Health endpoint for container orchestration
   const healthServer = http.createServer((req, res) => {

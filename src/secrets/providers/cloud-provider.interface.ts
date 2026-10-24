@@ -42,15 +42,6 @@ export interface CloudSecretsProvider {
   remove(key: string): Promise<void>;
 
   /**
-   * List the secret keys this service can read: its own scope and the shared
-   * scope. Secrets of other services are skipped; a key in both scopes is
-   * listed once.
-   *
-   * @returns Array of secret keys (without project/scope prefix)
-   */
-  list(): Promise<string[]>;
-
-  /**
    * Check if secret exists in cloud
    *
    * @param key Secret key

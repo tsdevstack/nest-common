@@ -75,6 +75,10 @@ export { MetricsService } from './metrics/metrics.service';
 
 // Database - Prisma connection pooling
 export { createPrismaConnection } from './database/prisma-connection';
+export {
+  waitForDatabase,
+  type WaitForDatabaseOptions,
+} from './database/wait-for-database';
 export type {
   PrismaConnectionConfig,
   PrismaConnectionResult,

@@ -253,10 +253,20 @@ export class AuthGuard implements CanActivate {
   }
 
   /**
-   * Compares a provided key with this service's `API_KEY` secret.
+   * Compares a provided key with this service's `API_KEY` secret. A key that
+   * cannot be read (missing, or the secret store failing) counts as
+   * unconfigured: 401 on protected handlers, anonymous on public ones.
    */
   private async checkServiceApiKey(apiKey: string): Promise<ServiceKeyCheck> {
-    const validApiKey = await this.secrets.get('API_KEY');
+    let validApiKey: string | undefined;
+    try {
+      validApiKey = await this.secrets.get('API_KEY');
+    } catch (error) {
+      this.logger.error(
+        `API_KEY could not be read from secrets: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 'unconfigured';
+    }
     if (!validApiKey) {
       this.logger.error('API_KEY not configured in secrets');
       return 'unconfigured';

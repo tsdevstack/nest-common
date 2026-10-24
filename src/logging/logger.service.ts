@@ -12,7 +12,8 @@ export interface LogContext {
 
 @Injectable({ scope: Scope.DEFAULT })
 export class LoggerService {
-  private readonly logger: PinoLogger;
+  /** Created on first use; children share their parent's (see child()) */
+  private pinoLogger?: PinoLogger;
   private context?: string;
   private correlationId?: string;
   private readonly options: LoggerModuleOptions;
@@ -23,6 +24,21 @@ export class LoggerService {
     moduleOptions?: LoggerModuleOptions,
   ) {
     this.options = moduleOptions || {};
+  }
+
+  /**
+   * The pino instance, created on first use so that a child logger can take
+   * its parent's instead of building its own (locally, every instance with
+   * the pretty transport runs its own worker thread).
+   */
+  private get logger(): PinoLogger {
+    if (!this.pinoLogger) {
+      this.pinoLogger = this.createPinoLogger();
+    }
+    return this.pinoLogger;
+  }
+
+  private createPinoLogger(): PinoLogger {
     const logLevel = this.options.level || process.env.LOG_LEVEL || 'info';
     const isPretty = process.env.NODE_ENV !== 'production';
 
@@ -47,23 +63,28 @@ export class LoggerService {
       }),
     };
 
-    // In development, use pino-pretty for readable logs
+    // In development, use pino-pretty for readable logs: one line per entry,
+    // "[Context] message". Locally the service name is already on every line
+    // (lerna prefixes it); trace ids and the request fields (http) stay in
+    // the JSON logs of deployed services.
     if (isPretty) {
-      this.logger = pino({
+      return pino({
         ...pinoOptions,
         transport: {
           target: 'pino-pretty',
           options: {
             colorize: true,
-            translateTime: 'SYS:standard',
-            ignore: 'pid,hostname',
+            singleLine: true,
+            translateTime: 'SYS:HH:MM:ss.l',
+            ignore: 'pid,hostname,service,context,trace_id,span_id,http',
+            messageFormat: '{if context}[{context}] {end}{msg}',
           },
         },
       });
-    } else {
-      // In production, output JSON logs
-      this.logger = pino(pinoOptions);
     }
+
+    // In production, output JSON logs
+    return pino(pinoOptions);
   }
 
   /**
@@ -123,7 +144,8 @@ export class LoggerService {
       ...(this.context && { context: this.context }),
       // Include trace context if available, otherwise fall back to correlationId
       ...traceContext,
-      ...(this.correlationId && !traceContext.trace_id && { correlationId: this.correlationId }),
+      ...(this.correlationId &&
+        !traceContext.trace_id && { correlationId: this.correlationId }),
       msg: message,
       ...context,
     };
@@ -163,6 +185,8 @@ export class LoggerService {
    */
   child(context: string): LoggerService {
     const child = new LoggerService(this.options);
+    // Share the pino instance: a child only adds its context
+    child.pinoLogger = this.logger;
     child.setContext(context);
     if (this.correlationId) {
       child.setCorrelationId(this.correlationId);

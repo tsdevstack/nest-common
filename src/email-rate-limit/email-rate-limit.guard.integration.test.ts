@@ -38,10 +38,19 @@ if (!REDIS_TEST_URL) {
     let guard: EmailRateLimitGuard;
     let reflector: Reflector;
 
-    const contextFor = (body: Record<string, unknown>): ExecutionContext =>
+    class AuthController {
+      login(): void {}
+      forgotPassword(): void {}
+    }
+
+    const contextFor = (
+      body: Record<string, unknown>,
+      handler: () => void = AuthController.prototype.login,
+    ): ExecutionContext =>
       ({
         switchToHttp: () => ({ getRequest: () => ({ body }) }),
-        getHandler: () => ({}),
+        getHandler: () => handler,
+        getClass: () => AuthController,
       }) as unknown as ExecutionContext;
 
     beforeAll(async () => {
@@ -74,7 +83,9 @@ if (!REDIS_TEST_URL) {
       expect(keys).toHaveLength(1);
       expect(keys[0]).not.toContain('alice');
       expect(keys[0]).not.toContain('@');
-      expect(keys[0]).toMatch(/^email_rate_limit:[0-9a-f]{32}:\d+$/);
+      expect(keys[0]).toMatch(
+        /^email_rate_limit:[\w-]+:\w+\.\w+:[0-9a-f]{32}:\d+$/,
+      );
     });
 
     it('should count casing variants as the same address', async () => {
@@ -101,6 +112,26 @@ if (!REDIS_TEST_URL) {
       await expect(
         guard.canActivate(contextFor({ email: 'carol@example.com' })),
       ).rejects.toThrow(HttpException);
+    });
+
+    it('should not let one route use up the limit of another', async () => {
+      for (let i = 0; i < 3; i++) {
+        await guard.canActivate(contextFor({ email: 'erin@example.com' }));
+      }
+      await expect(
+        guard.canActivate(contextFor({ email: 'erin@example.com' })),
+      ).rejects.toThrow(HttpException);
+
+      // Same address, other route: its own counter
+      await expect(
+        guard.canActivate(
+          contextFor(
+            { email: 'erin@example.com' },
+            AuthController.prototype.forgotPassword,
+          ),
+        ),
+      ).resolves.toBe(true);
+      expect(await redis.keys('email_rate_limit:*')).toHaveLength(2);
     });
 
     it('should leave a TTL so counters cannot accumulate', async () => {
