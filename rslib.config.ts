@@ -6,16 +6,16 @@ export default defineConfig({
       format: 'esm',
       syntax: ['node 18'],
       dts: true,
-      autoExternal: true,
       output: {
+        autoExternal: true,
         minify: true,
       },
     },
     {
       format: 'cjs',
       syntax: ['node 18'],
-      autoExternal: true,
       output: {
+        autoExternal: true,
         minify: true,
       },
     },

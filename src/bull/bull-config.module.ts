@@ -2,6 +2,7 @@ import { Module, type DynamicModule } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { SecretsModule } from '../secrets/secrets.module';
 import { SecretsService } from '../secrets/secrets.service';
+import { REDIS_PROTOCOL } from '../redis/redis.constants';
 
 /**
  * BullConfigModule
@@ -37,6 +38,7 @@ export class BullConfigModule {
             password: await secrets.get('REDIS_PASSWORD'),
             // AWS ElastiCache requires TLS when transit_encryption_enabled = true
             ...(redisTls === 'true' && { tls: {} }),
+            protocol: REDIS_PROTOCOL,
             maxRetriesPerRequest: null, // Required for workers - survives Redis blips
           },
           defaultJobOptions: {

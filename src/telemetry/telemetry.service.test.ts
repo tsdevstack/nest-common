@@ -4,18 +4,24 @@ import { describe, it, expect, rs, beforeEach, afterEach } from '@rstest/core';
 const {
   mockMeterProvider,
   mockTracerProvider,
+  mockApi,
   mockMeter,
   mockTracer,
   MockPrometheusExporter,
   MockMeterProvider,
-  MockNodeTracerProvider,
+  MockTracerProvider,
 } = rs.hoisted(() => {
   const meterProvider = {
     shutdown: rs.fn().mockResolvedValue(undefined),
   };
   const tracerProvider = {
-    register: rs.fn(),
     shutdown: rs.fn().mockResolvedValue(undefined),
+  };
+  // Global registrations the service performs on @opentelemetry/api
+  const api = {
+    setGlobalTracerProvider: rs.fn(),
+    setGlobalContextManager: rs.fn(),
+    setGlobalPropagator: rs.fn(),
   };
   const prometheusExporterInstance = {};
   const meter = {
@@ -37,19 +43,19 @@ const {
     shutdown = meterProvider.shutdown;
   }
 
-  class NodeTracerProviderMock {
-    register = tracerProvider.register;
+  class TracerProviderMock {
     shutdown = tracerProvider.shutdown;
   }
 
   return {
     mockMeterProvider: meterProvider,
     mockTracerProvider: tracerProvider,
+    mockApi: api,
     mockMeter: meter,
     mockTracer: tracer,
     MockPrometheusExporter: PrometheusExporterMock,
     MockMeterProvider: MeterProviderMock,
-    MockNodeTracerProvider: NodeTracerProviderMock,
+    MockTracerProvider: TracerProviderMock,
   };
 });
 
@@ -61,9 +67,23 @@ rs.mock('@opentelemetry/sdk-metrics', () => ({
   MeterProvider: MockMeterProvider,
 }));
 
-rs.mock('@opentelemetry/sdk-trace-node', () => ({
-  NodeTracerProvider: MockNodeTracerProvider,
+rs.mock('@opentelemetry/sdk-trace', () => ({
+  TracerProvider: MockTracerProvider,
   BatchSpanProcessor: class {},
+}));
+
+rs.mock('@opentelemetry/context-async-hooks', () => ({
+  AsyncLocalStorageContextManager: class {
+    enable(): this {
+      return this;
+    }
+  },
+}));
+
+rs.mock('@opentelemetry/core', () => ({
+  CompositePropagator: class {},
+  W3CTraceContextPropagator: class {},
+  W3CBaggagePropagator: class {},
 }));
 
 rs.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
@@ -86,6 +106,13 @@ rs.mock('@opentelemetry/api', () => ({
   },
   trace: {
     getTracer: rs.fn().mockReturnValue(mockTracer),
+    setGlobalTracerProvider: mockApi.setGlobalTracerProvider,
+  },
+  context: {
+    setGlobalContextManager: mockApi.setGlobalContextManager,
+  },
+  propagation: {
+    setGlobalPropagator: mockApi.setGlobalPropagator,
   },
 }));
 
@@ -174,7 +201,11 @@ describe('TelemetryService', () => {
     it('should initialize tracing when enabled', () => {
       service = new TelemetryService({ metrics: false, tracing: true });
       service.onModuleInit();
-      expect(mockTracerProvider.register).toHaveBeenCalled();
+      expect(mockApi.setGlobalTracerProvider).toHaveBeenCalledWith(
+        expect.any(MockTracerProvider),
+      );
+      expect(mockApi.setGlobalContextManager).toHaveBeenCalled();
+      expect(mockApi.setGlobalPropagator).toHaveBeenCalled();
     });
 
     it('should initialize both metrics and tracing by default', () => {
@@ -182,7 +213,7 @@ describe('TelemetryService', () => {
       service.onModuleInit();
       // Verify prometheus exporter was initialized
       expect(service.getPrometheusExporter()).not.toBeNull();
-      expect(mockTracerProvider.register).toHaveBeenCalled();
+      expect(mockApi.setGlobalTracerProvider).toHaveBeenCalled();
     });
 
     it('should not initialize metrics when disabled', () => {
@@ -196,7 +227,7 @@ describe('TelemetryService', () => {
       service = new TelemetryService({ metrics: false, tracing: false });
       rs.clearAllMocks();
       service.onModuleInit();
-      expect(mockTracerProvider.register).not.toHaveBeenCalled();
+      expect(mockApi.setGlobalTracerProvider).not.toHaveBeenCalled();
     });
   });
 

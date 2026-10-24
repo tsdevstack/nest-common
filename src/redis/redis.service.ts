@@ -7,6 +7,7 @@ import {
 import Redis from 'ioredis';
 import { SecretsService } from '../secrets/secrets.service';
 import { redisRetryStrategy } from './redis-retry-strategy';
+import { REDIS_PROTOCOL } from './redis.constants';
 
 /** Called every time the Redis connection becomes ready */
 export type RedisReadyListener = () => void | Promise<void>;
@@ -34,6 +35,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         password,
         // AWS ElastiCache requires TLS when transit_encryption_enabled = true
         ...(redisTls === 'true' && { tls: {} }),
+        protocol: REDIS_PROTOCOL,
 
         // Connection pooling settings (CRITICAL for serverless)
         // Note: ioredis uses a single persistent connection per instance

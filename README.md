@@ -1,21 +1,21 @@
 # @tsdevstack/nest-common
 
-Shared NestJS modules for tsdevstack microservices. Provides auth, rate limiting, secrets management, observability, notifications, database connectivity, and application bootstrap — so every service starts with production-ready infrastructure.
+Shared NestJS modules for tsdevstack microservices. Provides auth, rate limiting, secrets management, observability, notifications, database connectivity, and application bootstrap, so every service starts with production-ready infrastructure.
 
 ## Features
 
-- **Authentication** — Kong JWT validation guard with public/partner route decorators, [OWASP-aligned](https://tsdevstack.dev/authentication/jwt-tokens#owasp-alignment) timing-safe token comparison
-- **Rate Limiting** — Redis-backed rate limiting with per-route configuration
-- **Email Rate Limiting** — Dedicated rate limiter for email-sending endpoints
-- **Secrets Management** — Multi-provider secrets (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
-- **Observability** — Logging (Pino), metrics (Prometheus/OpenTelemetry), tracing (OTLP), health checks
-- **Database** — Prisma connection pooling with `pg` adapter and SSL support
-- **Object Storage** — Unified file storage (S3, GCS, Azure Blob, MinIO) with `@InjectStorage` decorator
-- **Async Messaging** — Inter-service event broadcasting via Redis Streams with `@OnMessage` decorator
-- **Notifications** — Email (Resend), SMS, and push notification service
-- **Background Jobs** — BullMQ configuration and scheduler guard
-- **Service Client** — Type-safe HTTP client for inter-service communication
-- **Bootstrap** — `startApp()` and `startWorker()` for consistent app initialization
+- **Authentication**: Kong JWT validation guard with public/partner route decorators, [OWASP-aligned](https://tsdevstack.dev/authentication/jwt-tokens#owasp-alignment) timing-safe token comparison
+- **Rate Limiting**: Redis-backed rate limiting with per-route configuration
+- **Email Rate Limiting**: Dedicated rate limiter for email-sending endpoints
+- **Secrets Management**: Multi-provider secrets (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
+- **Observability**: Logging (Pino), metrics (Prometheus/OpenTelemetry), tracing (OTLP), health checks
+- **Database**: Prisma connection pooling with `pg` adapter, SSL support, and a startup wait until the database answers
+- **Object Storage**: Unified file storage (S3, GCS, Azure Blob, RustFS locally) with `@InjectStorage` decorator
+- **Async Messaging**: Inter-service event broadcasting via Redis Streams with `@OnMessage` decorator
+- **Notifications**: Email (Resend), SMS, and push notification service
+- **Background Jobs**: BullMQ configuration and scheduler guard
+- **Service Client**: Type-safe HTTP client for inter-service communication
+- **Bootstrap**: `startApp()` and `startWorker()` for consistent app initialization
 
 ## Installation
 
@@ -86,14 +86,14 @@ export class UsersController {
 
 | Module | Description |
 |--------|-------------|
-| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators — [guide](https://tsdevstack.dev/authentication/overview) |
+| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators. [Guide](https://tsdevstack.dev/authentication/overview) |
 | `RedisModule` | Redis connection with retry and health checks |
 | `RateLimitModule` | Redis-backed rate limiting with `@RateLimit()` decorator |
 | `EmailRateLimitModule` | Dedicated email rate limiting |
 | `SecretsModule` | Multi-cloud secrets loading (GCP, AWS, Azure) |
-| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints — [guide](https://tsdevstack.dev/features/observability) |
-| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob — [guide](https://tsdevstack.dev/features/object-storage) |
-| `MessagingModule` | Inter-service event broadcasting via Redis Streams — [guide](https://tsdevstack.dev/features/async-messaging) |
+| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints. [Guide](https://tsdevstack.dev/features/observability) |
+| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob. [Guide](https://tsdevstack.dev/features/object-storage) |
+| `MessagingModule` | Inter-service event broadcasting via Redis Streams. [Guide](https://tsdevstack.dev/features/async-messaging) |
 | `NotificationModule` | Email (Resend), SMS, and push notifications |
 | `BullConfigModule` | BullMQ queue configuration |
 
@@ -104,6 +104,7 @@ export class UsersController {
 | `startApp()` | Bootstrap a NestJS application with standard middleware |
 | `startWorker()` | Bootstrap a background worker process |
 | `createPrismaConnection()` | Prisma client with `pg` adapter and SSL |
+| `waitForDatabase()` | Holds startup until the database answers (call it from `onModuleInit`) |
 | `BaseServiceClient` | HTTP client for service-to-service calls |
 | `filterForwardHeaders()` | Header filtering for inter-service requests |
 | `generateSwaggerDocs()` | OpenAPI documentation setup |

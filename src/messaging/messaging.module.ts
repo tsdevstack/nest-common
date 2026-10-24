@@ -5,6 +5,7 @@ import Redis from 'ioredis';
 import { SecretsService } from '../secrets/secrets.service';
 import { SecretsModule } from '../secrets/secrets.module';
 import { RedisModule } from '../redis/redis.module';
+import { REDIS_PROTOCOL } from '../redis/redis.constants';
 import { MessagingService } from './messaging.service';
 import type { MessagingModuleOptions } from './messaging.interface';
 import {
@@ -104,6 +105,7 @@ export class MessagingModule implements OnModuleInit {
             ...((await secrets.get('REDIS_TLS')) === 'true' && {
               tls: {},
             }),
+            protocol: REDIS_PROTOCOL,
             maxRetriesPerRequest: null,
             lazyConnect: true,
           });
@@ -116,6 +118,7 @@ export class MessagingModule implements OnModuleInit {
           ...((await secrets.get('REDIS_TLS')) === 'true' && {
             tls: {},
           }),
+          protocol: REDIS_PROTOCOL,
           // CRITICAL: null required for blocking XREADGROUP commands
           maxRetriesPerRequest: null,
           enableReadyCheck: true,
@@ -182,6 +185,7 @@ export class MessagingModule implements OnModuleInit {
           ...((await secrets.get('REDIS_TLS')) === 'true' && {
             tls: {},
           }),
+          protocol: REDIS_PROTOCOL,
           maxRetriesPerRequest: null,
           lazyConnect: !hasTopics,
           keepAlive: 30000,

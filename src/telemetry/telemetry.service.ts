@@ -14,11 +14,21 @@ import {
 } from '@opentelemetry/semantic-conventions';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { MeterProvider } from '@opentelemetry/sdk-metrics';
-import { metrics, trace, type Meter, type Tracer } from '@opentelemetry/api';
 import {
-  NodeTracerProvider,
-  BatchSpanProcessor,
-} from '@opentelemetry/sdk-trace-node';
+  context,
+  metrics,
+  propagation,
+  trace,
+  type Meter,
+  type Tracer,
+} from '@opentelemetry/api';
+import { TracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import {
+  CompositePropagator,
+  W3CBaggagePropagator,
+  W3CTraceContextPropagator,
+} from '@opentelemetry/core';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import type { TelemetryModuleOptions } from './telemetry.interface';
 
@@ -28,7 +38,7 @@ const DEFAULT_OTLP_ENDPOINT = 'http://localhost:4318';
 export class TelemetryService implements OnModuleInit, OnModuleDestroy {
   private meterProvider: MeterProvider | null = null;
   private prometheusExporter: PrometheusExporter | null = null;
-  private tracerProvider: NodeTracerProvider | null = null;
+  private tracerProvider: TracerProvider | null = null;
   private readonly serviceName: string;
   private readonly serviceVersion: string;
   private readonly metricsEnabled: boolean;
@@ -89,13 +99,25 @@ export class TelemetryService implements OnModuleInit, OnModuleDestroy {
     });
 
     // Create tracer provider with span processor
-    this.tracerProvider = new NodeTracerProvider({
+    this.tracerProvider = new TracerProvider({
       resource,
-      spanProcessors: [new BatchSpanProcessor(otlpExporter)],
+      spanProcessors: [new BatchSpanProcessor({ exporter: otlpExporter })],
     });
 
-    // Register as global tracer provider
-    this.tracerProvider.register();
+    // Register the provider, the Node context manager and the W3C propagators
+    // (what NodeTracerProvider.register() did before SDK 3)
+    trace.setGlobalTracerProvider(this.tracerProvider);
+    context.setGlobalContextManager(
+      new AsyncLocalStorageContextManager().enable(),
+    );
+    propagation.setGlobalPropagator(
+      new CompositePropagator({
+        propagators: [
+          new W3CTraceContextPropagator(),
+          new W3CBaggagePropagator(),
+        ],
+      }),
+    );
   }
 
   async onModuleDestroy(): Promise<void> {
