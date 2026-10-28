@@ -5,7 +5,16 @@ import { LocalSecretsProvider } from './providers/local.provider';
 import { SecretsProviderFactory } from './providers/provider-factory';
 import { CloudProviderAdapter } from './providers/cloud-provider-adapter';
 import { buildServiceApiKeyName } from './build-service-api-key-name';
-import { SERVICE_API_KEY_ALIAS } from './secrets.constants';
+import { readOwnThenShared } from './read-own-then-shared';
+import {
+  SECRETS_CACHE_TTL_MS,
+  SERVICE_API_KEY_ALIAS,
+} from './secrets.constants';
+
+interface CachedSecret {
+  value: string;
+  expiresAt: number;
+}
 
 /**
  * Secrets Service
@@ -26,6 +35,10 @@ import { SERVICE_API_KEY_ALIAS } from './secrets.constants';
  * }
  * ```
  *
+ * The lookup rules live here, the same for every provider: `API_KEY` is the
+ * service's own key, the service's own scope wins over shared, and values
+ * are cached. Providers only read one exact name.
+ *
  * IMPORTANT: Apps should NEVER use process.env to access secrets.
  * Always inject SecretsService and use await this.secrets.get('KEY').
  *
@@ -35,6 +48,10 @@ import { SERVICE_API_KEY_ALIAS } from './secrets.constants';
 export class SecretsService {
   private provider: SecretsProvider;
   private config: SecretsConfig;
+  private readonly cache = new Map<string, CachedSecret>();
+  // Lookups in flight, so concurrent reads of an expired key share one
+  private readonly pending = new Map<string, Promise<string>>();
+  private readonly cacheTtlMs: number;
 
   constructor(config: SecretsConfig) {
     this.config = config;
@@ -51,6 +68,11 @@ export class SecretsService {
         this.config.serviceName,
       );
     }
+
+    this.cacheTtlMs =
+      this.provider.getName() === 'local'
+        ? SECRETS_CACHE_TTL_MS.local
+        : SECRETS_CACHE_TTL_MS.cloud;
   }
 
   /**
@@ -62,7 +84,12 @@ export class SecretsService {
 
   /**
    * Get a single secret by key with caching
-   * Supports runtime secret refresh (cached for 1 minute in local provider)
+   * Supports runtime secret refresh (cached for 1 minute locally, 5 minutes
+   * in the cloud)
+   *
+   * The service's own value wins when a key exists in its scope and in the
+   * shared scope. Both are read at once, so a cache miss waits for one
+   * round-trip.
    *
    * `API_KEY` is this service's own API key, stored as `{SERVICE}_API_KEY`
    * (`auth-service` → `AUTH_SERVICE_API_KEY`). It is resolved here, above
@@ -70,37 +97,29 @@ export class SecretsService {
    *
    * @param key - The secret key to retrieve
    * @returns The secret value
-   * @throws Error if secret not found
+   * @throws Error if the secret is in neither scope, or the store cannot be read
    */
   async get(key: string): Promise<string> {
     const name =
       key === SERVICE_API_KEY_ALIAS
         ? buildServiceApiKeyName(this.config.serviceName)
         : key;
-    return this.provider.get(name);
-  }
 
-  /**
-   * Set a secret value
-   * For local provider: Updates .secrets.user.json and triggers regeneration
-   * For cloud providers: Updates the secret in the cloud provider
-   *
-   * @param key - The secret key
-   * @param value - The secret value
-   */
-  async set(key: string, value: string): Promise<void> {
-    await this.provider.set(key, value);
-  }
+    const cached = this.cache.get(name);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
 
-  /**
-   * Delete a secret
-   * For local provider: Removes from .secrets.user.json and triggers regeneration
-   * For cloud providers: Deletes from the cloud provider
-   *
-   * @param key - The secret key to delete
-   */
-  async delete(key: string): Promise<void> {
-    await this.provider.delete(key);
+    const inFlight = this.pending.get(name);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const lookup = this.lookup(name).finally(() => {
+      this.pending.delete(name);
+    });
+    this.pending.set(name, lookup);
+    return lookup;
   }
 
   /**
@@ -108,7 +127,39 @@ export class SecretsService {
    * Forces next get() to reload from source
    */
   clearCache(): void {
-    this.provider.clearCache();
+    this.cache.clear();
+  }
+
+  /**
+   * Read a key from the service's scope and the shared scope, and cache it
+   */
+  private async lookup(name: string): Promise<string> {
+    const value = await readOwnThenShared(
+      (scope) => this.provider.read(name, scope),
+      this.config.serviceName,
+    );
+
+    if (value === null) {
+      throw new Error(
+        `Secret "${name}" not found in ${this.provider.getName()} ` +
+          `for service "${this.config.serviceName}" or the shared scope.`,
+      );
+    }
+
+    // URLs change when services are deployed, and callers need the new one
+    // at once, so they are not cached
+    if (!this.isUrlValue(value)) {
+      this.cache.set(name, {
+        value,
+        expiresAt: Date.now() + this.cacheTtlMs,
+      });
+    }
+
+    return value;
+  }
+
+  private isUrlValue(value: string): boolean {
+    return value.startsWith('https://') || value.startsWith('http://');
   }
 
   /**
@@ -147,6 +198,6 @@ export class SecretsService {
     }
 
     // Wrap cloud provider in adapter to match SecretsProvider interface
-    return new CloudProviderAdapter(cloudProvider, this.config.serviceName);
+    return new CloudProviderAdapter(cloudProvider);
   }
 }

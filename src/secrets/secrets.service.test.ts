@@ -3,29 +3,20 @@ import type { SecretsProvider } from './secrets.interface';
 
 // Mock providers - these need to be defined before rs.mock calls
 const mockLocalProvider = {
-  get: rs.fn(),
-  set: rs.fn(),
-  delete: rs.fn(),
-  clearCache: rs.fn(),
+  read: rs.fn(),
   getName: rs.fn().mockReturnValue('local'),
   setServiceName: rs.fn(),
 };
 
 const mockCloudProvider = {
-  get: rs.fn(),
-  set: rs.fn(),
-  delete: rs.fn(),
-  clearCache: rs.fn(),
+  read: rs.fn(),
   getName: rs.fn().mockReturnValue('gcp'),
 };
 
 // Mock the local provider - must use class syntax for constructor
 rs.mock('./providers/local.provider', () => ({
   LocalSecretsProvider: class MockLocalSecretsProvider {
-    get = mockLocalProvider.get;
-    set = mockLocalProvider.set;
-    delete = mockLocalProvider.delete;
-    clearCache = mockLocalProvider.clearCache;
+    read = mockLocalProvider.read;
     getName = mockLocalProvider.getName;
     setServiceName = mockLocalProvider.setServiceName;
   },
@@ -41,10 +32,7 @@ rs.mock('./providers/provider-factory', () => ({
 // Mock the cloud provider adapter - must use class syntax for constructor
 rs.mock('./providers/cloud-provider-adapter', () => ({
   CloudProviderAdapter: class MockCloudProviderAdapter {
-    get = mockCloudProvider.get;
-    set = mockCloudProvider.set;
-    delete = mockCloudProvider.delete;
-    clearCache = mockCloudProvider.clearCache;
+    read = mockCloudProvider.read;
     getName = mockCloudProvider.getName;
   },
 }));
@@ -52,8 +40,43 @@ rs.mock('./providers/cloud-provider-adapter', () => ({
 import { SecretsService } from './secrets.service';
 import { SecretsProviderFactory } from './providers/provider-factory';
 
+/**
+ * A provider over an in-memory store: { scope: { KEY: value } }. An Error
+ * as a scope makes every read of that scope fail with it.
+ */
+const memoryProvider = (
+  scopes: Record<string, Record<string, string> | Error>,
+  name = 'gcp',
+) => {
+  const read = rs.fn(async (key: string, scope: string) => {
+    const entries = scopes[scope];
+    if (entries instanceof Error) {
+      throw entries;
+    }
+    return entries?.[key] ?? null;
+  });
+  const provider: SecretsProvider = {
+    read,
+    getName: () => name,
+  };
+  return { provider, read };
+};
+
+const serviceWith = (
+  provider: SecretsProvider,
+  serviceName = 'auth-service',
+): SecretsService =>
+  new SecretsService({ serviceName, forceProvider: provider });
+
 describe('SecretsService', () => {
   const originalEnv = process.env;
+  let now: ReturnType<typeof rs.spyOn> | undefined;
+
+  // Pins Date.now() to `ms` for the cache period tests
+  const setNow = (ms: number): void => {
+    now ??= rs.spyOn(Date, 'now');
+    now.mockReturnValue(ms);
+  };
 
   beforeEach(() => {
     rs.clearAllMocks();
@@ -62,6 +85,8 @@ describe('SecretsService', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+    now?.mockRestore();
+    now = undefined;
   });
 
   describe('constructor', () => {
@@ -87,21 +112,11 @@ describe('SecretsService', () => {
 
     it('should use forced provider when specified', () => {
       process.env.SECRETS_PROVIDER = 'local';
+      const { provider } = memoryProvider({}, 'forced');
 
-      const forcedProvider: SecretsProvider = {
-        get: rs.fn(),
-        set: rs.fn(),
-        delete: rs.fn(),
-        clearCache: rs.fn(),
-        getName: () => 'forced',
-      };
+      const service = serviceWith(provider, 'test-service');
 
-      const service = new SecretsService({
-        serviceName: 'test-service',
-        forceProvider: forcedProvider,
-      });
-
-      expect(service.getProvider()).toBe(forcedProvider);
+      expect(service.getProvider()).toBe(provider);
     });
 
     it('should use cloud provider via factory when SECRETS_PROVIDER is gcp', () => {
@@ -118,82 +133,172 @@ describe('SecretsService', () => {
   });
 
   describe('get', () => {
-    it('should delegate to provider.get', async () => {
-      process.env.SECRETS_PROVIDER = 'local';
-      (mockLocalProvider.get as ReturnType<typeof rs.fn>).mockResolvedValue(
-        'secret-value',
-      );
+    describe('Standard use cases', () => {
+      it("should return the service's own value over the shared one", async () => {
+        const { provider } = memoryProvider({
+          'auth-service': { LOG_LEVEL: 'debug' },
+          shared: { LOG_LEVEL: 'info' },
+        });
 
-      const service = new SecretsService({ serviceName: 'test-service' });
-      const result = await service.get('MY_SECRET');
+        await expect(serviceWith(provider).get('LOG_LEVEL')).resolves.toBe(
+          'debug',
+        );
+      });
 
-      expect(mockLocalProvider.get).toHaveBeenCalledWith('MY_SECRET');
-      expect(result).toBe('secret-value');
+      it('should return the shared value when the service has none', async () => {
+        const { provider } = memoryProvider({
+          shared: { KONG_TRUST_TOKEN: 'trust-token' },
+        });
+
+        await expect(
+          serviceWith(provider).get('KONG_TRUST_TOKEN'),
+        ).resolves.toBe('trust-token');
+      });
+
+      it('should read both scopes of a key at once', async () => {
+        const { provider, read } = memoryProvider({ shared: { KEY: 'v' } });
+
+        await serviceWith(provider).get('KEY');
+
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(read).toHaveBeenCalledWith('KEY', 'auth-service');
+        expect(read).toHaveBeenCalledWith('KEY', 'shared');
+      });
+
+      it("should read API_KEY as this service's {SERVICE}_API_KEY", async () => {
+        const { provider, read } = memoryProvider({
+          shared: { AUTH_SERVICE_API_KEY: 'service-key' },
+        });
+
+        await expect(serviceWith(provider).get('API_KEY')).resolves.toBe(
+          'service-key',
+        );
+        expect(read).toHaveBeenCalledWith('AUTH_SERVICE_API_KEY', 'shared');
+        expect(read).not.toHaveBeenCalledWith('API_KEY', expect.anything());
+      });
+
+      it('should leave other keys ending in _API_KEY unchanged', async () => {
+        const { provider, read } = memoryProvider({
+          shared: { AUTH_SERVICE_API_KEY: 'other-key' },
+        });
+
+        await serviceWith(provider, 'bff-service').get('AUTH_SERVICE_API_KEY');
+
+        expect(read).toHaveBeenCalledWith('AUTH_SERVICE_API_KEY', 'shared');
+      });
     });
 
-    it("should read API_KEY as this service's {SERVICE}_API_KEY", async () => {
-      process.env.SECRETS_PROVIDER = 'local';
-      (mockLocalProvider.get as ReturnType<typeof rs.fn>).mockResolvedValue(
-        'service-key',
-      );
+    describe('Errors', () => {
+      it('should throw when neither scope has the key', async () => {
+        const { provider } = memoryProvider({});
 
-      const service = new SecretsService({ serviceName: 'auth-service' });
-      const result = await service.get('API_KEY');
+        await expect(serviceWith(provider).get('MISSING')).rejects.toThrow(
+          'Secret "MISSING" not found in gcp for service "auth-service" or the shared scope.',
+        );
+      });
 
-      expect(mockLocalProvider.get).toHaveBeenCalledWith(
-        'AUTH_SERVICE_API_KEY',
-      );
-      expect(result).toBe('service-key');
+      it('should report a failed read as the failure, not as a missing key', async () => {
+        const { provider } = memoryProvider({
+          'auth-service': new Error('Failed to read secret: PERMISSION_DENIED'),
+          shared: { KEY: 'v' },
+        });
+
+        await expect(serviceWith(provider).get('KEY')).rejects.toThrow(
+          'PERMISSION_DENIED',
+        );
+      });
+
+      it('should not cache a failed lookup', async () => {
+        const scopes: Record<string, Record<string, string> | Error> = {
+          shared: new Error('network'),
+        };
+        const { provider } = memoryProvider(scopes);
+        const service = serviceWith(provider);
+
+        await expect(service.get('KEY')).rejects.toThrow('network');
+        scopes.shared = { KEY: 'v' };
+
+        await expect(service.get('KEY')).resolves.toBe('v');
+      });
     });
 
-    it('should leave other keys ending in _API_KEY unchanged', async () => {
-      process.env.SECRETS_PROVIDER = 'local';
-      (mockLocalProvider.get as ReturnType<typeof rs.fn>).mockResolvedValue(
-        'other-key',
-      );
+    describe('Caching', () => {
+      it('should reuse a value within the cache period', async () => {
+        const { provider, read } = memoryProvider({ shared: { KEY: 'v' } });
+        const service = serviceWith(provider);
 
-      const service = new SecretsService({ serviceName: 'bff-service' });
-      await service.get('AUTH_SERVICE_API_KEY');
+        await service.get('KEY');
+        await service.get('KEY');
 
-      expect(mockLocalProvider.get).toHaveBeenCalledWith(
-        'AUTH_SERVICE_API_KEY',
-      );
-    });
-  });
+        expect(read).toHaveBeenCalledTimes(2); // one lookup, two scopes
+      });
 
-  describe('set', () => {
-    it('should delegate to provider.set', async () => {
-      process.env.SECRETS_PROVIDER = 'local';
+      it('should read again after 5 minutes in the cloud', async () => {
+        setNow(1_000_000);
+        const { provider, read } = memoryProvider({ shared: { KEY: 'v' } });
+        const service = serviceWith(provider);
 
-      const service = new SecretsService({ serviceName: 'test-service' });
-      await service.set('MY_SECRET', 'new-value');
+        await service.get('KEY');
+        setNow(1_000_000 + 5 * 60 * 1000 - 1);
+        await service.get('KEY');
+        expect(read).toHaveBeenCalledTimes(2);
 
-      expect(mockLocalProvider.set).toHaveBeenCalledWith(
-        'MY_SECRET',
-        'new-value',
-      );
-    });
-  });
+        setNow(1_000_000 + 5 * 60 * 1000 + 1);
+        await service.get('KEY');
+        expect(read).toHaveBeenCalledTimes(4);
+      });
 
-  describe('delete', () => {
-    it('should delegate to provider.delete', async () => {
-      process.env.SECRETS_PROVIDER = 'local';
+      it('should read again after 1 minute locally', async () => {
+        setNow(1_000_000);
+        const { provider, read } = memoryProvider(
+          { shared: { KEY: 'v' } },
+          'local',
+        );
+        const service = serviceWith(provider);
 
-      const service = new SecretsService({ serviceName: 'test-service' });
-      await service.delete('MY_SECRET');
+        await service.get('KEY');
+        setNow(1_000_000 + 60 * 1000 + 1);
+        await service.get('KEY');
 
-      expect(mockLocalProvider.delete).toHaveBeenCalledWith('MY_SECRET');
-    });
-  });
+        expect(read).toHaveBeenCalledTimes(4);
+      });
 
-  describe('clearCache', () => {
-    it('should delegate to provider.clearCache', () => {
-      process.env.SECRETS_PROVIDER = 'local';
+      it('should share one lookup between concurrent reads of a key', async () => {
+        const { provider, read } = memoryProvider({ shared: { KEY: 'v' } });
+        const service = serviceWith(provider);
 
-      const service = new SecretsService({ serviceName: 'test-service' });
-      service.clearCache();
+        const values = await Promise.all([
+          service.get('KEY'),
+          service.get('KEY'),
+          service.get('KEY'),
+        ]);
 
-      expect(mockLocalProvider.clearCache).toHaveBeenCalled();
+        expect(values).toEqual(['v', 'v', 'v']);
+        expect(read).toHaveBeenCalledTimes(2);
+      });
+
+      it('should not cache URL values', async () => {
+        const { provider, read } = memoryProvider({
+          shared: { OFFERS_SERVICE_URL: 'https://offers.internal' },
+        });
+        const service = serviceWith(provider);
+
+        await service.get('OFFERS_SERVICE_URL');
+        await service.get('OFFERS_SERVICE_URL');
+
+        expect(read).toHaveBeenCalledTimes(4);
+      });
+
+      it('should read again after clearCache', async () => {
+        const { provider, read } = memoryProvider({ shared: { KEY: 'v' } });
+        const service = serviceWith(provider);
+
+        await service.get('KEY');
+        service.clearCache();
+        await service.get('KEY');
+
+        expect(read).toHaveBeenCalledTimes(4);
+      });
     });
   });
 

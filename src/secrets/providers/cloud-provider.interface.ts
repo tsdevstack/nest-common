@@ -2,52 +2,20 @@
  * Cloud Secrets Provider Interface
  *
  * Common interface for all cloud secret providers (GCP, AWS, Azure).
- * Providers handle cloud-specific API calls and caching.
+ * Providers handle the cloud-specific API calls for one exact name; scope
+ * order and caching live in SecretsService.
  */
 
 export interface CloudSecretsProvider {
   /**
-   * Get secret value by key
-   *
-   * Provider handles:
-   * - Service-scoped lookup: {project}-{service}-{key}
-   * - Shared fallback: {project}-shared-{key}
-   * - Caching (5-minute TTL)
+   * Read one secret: {project}-{scope}-{key}
    *
    * @param key Secret key (e.g., 'DATABASE_URL')
-   * @returns Secret value or null if not found
+   * @param scope The service's own scope (its name) or `shared`
+   * @returns Secret value, or null when no such secret exists
+   * @throws Error when the store cannot answer (access denied, network)
    */
-  get(key: string): Promise<string | null>;
-
-  /**
-   * Set secret value
-   *
-   * Provider determines scope (service vs shared) and creates/updates secret.
-   *
-   * @param key Secret key
-   * @param value Secret value
-   * @param metadata Optional metadata tags/labels
-   */
-  set(
-    key: string,
-    value: string,
-    metadata?: Record<string, string>,
-  ): Promise<void>;
-
-  /**
-   * Remove secret from cloud
-   *
-   * @param key Secret key
-   */
-  remove(key: string): Promise<void>;
-
-  /**
-   * Check if secret exists in cloud
-   *
-   * @param key Secret key
-   * @returns True if exists
-   */
-  exists(key: string): Promise<boolean>;
+  read(key: string, scope: string): Promise<string | null>;
 
   /**
    * Get provider name
@@ -80,12 +48,4 @@ export interface CloudProviderConfig {
    * - Azure: { vaultUrl, credentialsPath }
    */
   providerConfig?: Record<string, unknown>;
-}
-
-/**
- * Cache entry for secret values
- */
-export interface CacheEntry {
-  value: string;
-  expiresAt: number;
 }

@@ -2,44 +2,26 @@
  * Secrets Provider Interface
  *
  * All secret providers (local, AWS, GCP, Azure) must implement this interface.
+ * A provider reads one exact name; which scopes a lookup reads, in which
+ * order, and caching are decided once, in SecretsService. Services only read
+ * secrets: the CLI writes them (generate-secrets, cloud-secrets:*), and the
+ * cloud identities services run with are read-only.
  */
 export interface SecretsProvider {
   /**
-   * Get a single secret by key
-   * Supports caching with TTL for performance
-   * @param key - The secret key to retrieve
-   * @returns The secret value
-   * @throws Error if secret not found
-   */
-  get(key: string): Promise<string>;
-
-  /**
-   * Set a secret value
-   * For local provider: Updates .secrets.user.json and triggers regeneration
-   * For cloud providers: Updates the secret in the cloud provider
+   * Read one secret from one scope
    * @param key - The secret key
-   * @param value - The secret value
+   * @param scope - The service's own scope (its name) or `shared`
+   * @returns The value, or null when the scope has no such key
+   * @throws Error when the store cannot answer (access denied, network);
+   *   that is never reported as a missing key
    */
-  set(key: string, value: string): Promise<void>;
-
-  /**
-   * Delete a secret
-   * For local provider: Removes from .secrets.user.json and triggers regeneration
-   * For cloud providers: Deletes from the cloud provider
-   * @param key - The secret key to delete
-   */
-  delete(key: string): Promise<void>;
+  read(key: string, scope: string): Promise<string | null>;
 
   /**
    * Get the provider name (for logging/debugging)
    */
   getName(): string;
-
-  /**
-   * Clear any cached secrets
-   * Forces next get() to reload from source
-   */
-  clearCache(): void;
 }
 
 /**

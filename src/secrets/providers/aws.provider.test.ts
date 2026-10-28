@@ -1,4 +1,5 @@
 import { describe, it, expect, rs, beforeEach } from '@rstest/core';
+import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { AWSSecretsProvider } from './aws.provider';
 import type { CloudProviderConfig } from './cloud-provider.interface';
 
@@ -12,19 +13,19 @@ rs.mock('@aws-sdk/client-secrets-manager', () => {
       config = { region: 'us-east-1' };
     },
     GetSecretValueCommand: rs.fn(),
-    CreateSecretCommand: rs.fn(),
-    PutSecretValueCommand: rs.fn(),
-    DeleteSecretCommand: rs.fn(),
-    DescribeSecretCommand: rs.fn(),
   };
 });
+
+// What the SDK throws, by error name
+const awsError = (name: string): Error =>
+  Object.assign(new Error(name), { name });
 
 describe('AWSSecretsProvider', () => {
   let provider: AWSSecretsProvider;
 
   beforeEach(() => {
     rs.clearAllMocks();
-    mockSend.mockClear();
+    mockSend.mockReset();
 
     const config: CloudProviderConfig = {
       projectName: 'testproject',
@@ -62,224 +63,62 @@ describe('AWSSecretsProvider', () => {
     });
   });
 
-  describe('get', () => {
-    it('should get shared secret with a single lookup', async () => {
-      mockSend.mockResolvedValue({
-        SecretString: 'shared-value',
-      });
+  describe('read', () => {
+    it('should read the exact name of the scope', async () => {
+      mockSend.mockResolvedValue({ SecretString: 'shared-value' });
 
-      const result = await provider.get('SOME_SECRET');
+      const result = await provider.read('SOME_SECRET', 'shared');
 
       expect(result).toBe('shared-value');
       expect(mockSend).toHaveBeenCalledTimes(1);
-    });
-
-    it('should fall back to service-scoped secret when shared does not exist', async () => {
-      mockSend
-        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // shared fails
-        .mockResolvedValueOnce({ SecretString: 'service-value' }); // service-scoped succeeds
-
-      const result = await provider.get('SOME_SECRET');
-
-      expect(result).toBe('service-value');
-      expect(mockSend).toHaveBeenCalledTimes(2);
-    });
-
-    it('should return null when neither shared nor service-scoped exists', async () => {
-      mockSend.mockRejectedValue(new Error('ResourceNotFoundException'));
-
-      const result = await provider.get('NONEXISTENT');
-
-      expect(result).toBeNull();
-      expect(mockSend).toHaveBeenCalledTimes(2);
-    });
-
-    it('should cache successful results', async () => {
-      mockSend.mockResolvedValue({
-        SecretString: 'cached-value',
+      expect(GetSecretValueCommand).toHaveBeenCalledWith({
+        SecretId: 'testproject-shared-SOME_SECRET',
       });
-
-      const result1 = await provider.get('CACHED_KEY');
-      const result2 = await provider.get('CACHED_KEY');
-
-      expect(result1).toBe('cached-value');
-      expect(result2).toBe('cached-value');
-      expect(mockSend).toHaveBeenCalledTimes(1); // Only called once due to caching
     });
 
-    it('should not cache null results', async () => {
-      mockSend.mockRejectedValue(new Error('ResourceNotFoundException'));
+    it("should read the service's own scope by its name", async () => {
+      mockSend.mockResolvedValue({ SecretString: 'service-value' });
 
-      const result1 = await provider.get('MISSING_KEY');
-      const result2 = await provider.get('MISSING_KEY');
-
-      expect(result1).toBeNull();
-      expect(result2).toBeNull();
-      expect(mockSend).toHaveBeenCalledTimes(4); // 2 attempts per call (shared + service)
-    });
-  });
-
-  describe('set', () => {
-    it('should create new secret when it does not exist', async () => {
-      // Mock exists check (shared and service-scoped both fail)
-      mockSend
-        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // shared exists check
-        .mockRejectedValueOnce(new Error('ResourceNotFoundException')) // service exists check
-        .mockResolvedValueOnce({}); // create secret
-
-      await provider.set('NEW_KEY', 'new-value');
-
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      await expect(provider.read('SOME_SECRET', 'test-service')).resolves.toBe(
+        'service-value',
+      );
+      expect(GetSecretValueCommand).toHaveBeenCalledWith({
+        SecretId: 'testproject-test-service-SOME_SECRET',
+      });
     });
 
-    it('should update existing secret', async () => {
-      // Mock exists check (shared succeeds)
-      mockSend
-        .mockResolvedValueOnce({ Name: 'existing-secret' }) // shared exists check
-        .mockResolvedValueOnce({}); // update secret
+    it('should return null when the secret does not exist', async () => {
+      mockSend.mockRejectedValue(awsError('ResourceNotFoundException'));
 
-      await provider.set('EXISTING_KEY', 'updated-value');
-
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      await expect(provider.read('NONEXISTENT', 'shared')).resolves.toBeNull();
     });
 
-    it('should set secret with metadata tags', async () => {
-      mockSend
-        .mockRejectedValueOnce(new Error('Not found'))
-        .mockRejectedValueOnce(new Error('Not found'))
-        .mockResolvedValueOnce({});
+    it('should return null when the secret is scheduled for deletion', async () => {
+      mockSend.mockRejectedValue(awsError('InvalidRequestException'));
 
-      await provider.set('KEY', 'value', { environment: 'staging' });
-
-      expect(mockSend).toHaveBeenCalledTimes(3);
+      await expect(
+        provider.read('REMOVED', 'test-service'),
+      ).resolves.toBeNull();
     });
 
-    it('should invalidate cache after setting', async () => {
-      // First get (cache it)
-      mockSend.mockResolvedValue({ SecretString: 'old-value' });
-      const result1 = await provider.get('KEY');
-      expect(result1).toBe('old-value');
+    it('should throw, not report a missing secret, when access is denied', async () => {
+      mockSend.mockRejectedValue(awsError('AccessDeniedException'));
 
-      // Set new value
-      mockSend
-        .mockResolvedValueOnce({ Name: 'exists' }) // exists check
-        .mockResolvedValueOnce({}); // update
-
-      await provider.set('KEY', 'new-value');
-
-      // Get again (should fetch from AWS, not cache)
-      mockSend.mockResolvedValue({ SecretString: 'new-value' });
-      const result2 = await provider.get('KEY');
-      expect(result2).toBe('new-value');
-    });
-
-    it('should throw error on failure', async () => {
-      mockSend
-        .mockRejectedValueOnce(new Error('Not found'))
-        .mockRejectedValueOnce(new Error('Not found'))
-        .mockRejectedValueOnce(new Error('Permission denied'));
-
-      await expect(provider.set('KEY', 'value')).rejects.toThrow(
-        'Failed to set secret',
+      await expect(provider.read('KEY', 'shared')).rejects.toThrow(
+        'Failed to read secret testproject-shared-KEY from AWS: AccessDeniedException',
       );
     });
-  });
 
-  describe('remove', () => {
-    it('should delete secret with recovery window', async () => {
-      mockSend.mockResolvedValue({});
+    it('should return null when the secret has no string value', async () => {
+      mockSend.mockResolvedValue({ SecretBinary: new Uint8Array([1]) });
 
-      await provider.remove('KEY_TO_DELETE');
-
-      expect(mockSend).toHaveBeenCalledTimes(1);
-    });
-
-    it('should invalidate cache after removal', async () => {
-      // Cache a value
-      mockSend.mockResolvedValue({ SecretString: 'cached' });
-      await provider.get('KEY');
-
-      // Remove it
-      mockSend.mockResolvedValue({});
-      await provider.remove('KEY');
-
-      // Try to get again (should hit AWS, not cache)
-      mockSend.mockRejectedValue(new Error('Not found'));
-      const result = await provider.get('KEY');
-      expect(result).toBeNull();
-    });
-
-    it('should throw error on failure', async () => {
-      mockSend.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(provider.remove('KEY')).rejects.toThrow(
-        'Failed to remove secret',
-      );
-    });
-  });
-
-  describe('exists', () => {
-    it('should return true when shared secret exists', async () => {
-      mockSend.mockResolvedValue({ Name: 'secret-name' });
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockSend).toHaveBeenCalledTimes(1);
-    });
-
-    it('should check service scope if shared does not exist', async () => {
-      mockSend
-        .mockRejectedValueOnce(new Error('Not found')) // shared
-        .mockResolvedValueOnce({ Name: 'service-secret' }); // service-scoped
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockSend).toHaveBeenCalledTimes(2);
-    });
-
-    it('should return false when secret does not exist in either scope', async () => {
-      mockSend.mockRejectedValue(new Error('ResourceNotFoundException'));
-
-      const result = await provider.exists('NONEXISTENT');
-
-      expect(result).toBe(false);
-      expect(mockSend).toHaveBeenCalledTimes(2);
+      await expect(provider.read('BINARY', 'shared')).resolves.toBeNull();
     });
   });
 
   describe('getProviderName', () => {
     it('should return "aws"', () => {
       expect(provider.getProviderName()).toBe('aws');
-    });
-  });
-
-  describe('secret naming', () => {
-    it('should build correct secret names', async () => {
-      mockSend.mockResolvedValue({ SecretString: 'value' });
-
-      await provider.get('DATABASE_URL');
-
-      // Verify that send was called (the actual secret name is internal implementation)
-      expect(mockSend).toHaveBeenCalledTimes(1);
-      expect(mockSend).toHaveBeenCalledWith(expect.any(Object));
-    });
-  });
-
-  describe('caching', () => {
-    it('should cache for 5 minutes', async () => {
-      mockSend.mockResolvedValue({ SecretString: 'cached-value' });
-
-      // First call
-      await provider.get('KEY');
-      expect(mockSend).toHaveBeenCalledTimes(1);
-
-      // Second call within cache TTL
-      await provider.get('KEY');
-      expect(mockSend).toHaveBeenCalledTimes(1); // Still only 1 call
-
-      // Note: We can't easily test cache expiration without mocking time
     });
   });
 });

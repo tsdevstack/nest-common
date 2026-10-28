@@ -4,53 +4,25 @@ import { CloudSecretsProvider } from './cloud-provider.interface';
 /**
  * Adapter to make CloudSecretsProvider compatible with SecretsProvider interface
  *
- * The CloudSecretsProvider interface is designed for cloud-native operations
- * (get, set, remove, list, exists) while SecretsProvider is the legacy interface
- * used throughout the application.
+ * CloudSecretsProvider is the interface of the cloud providers, while
+ * SecretsProvider is the interface SecretsService uses for every provider,
+ * local included.
  *
  * This adapter bridges the two interfaces, allowing cloud providers to work
  * with the existing SecretsService implementation.
  */
 export class CloudProviderAdapter implements SecretsProvider {
   private cloudProvider: CloudSecretsProvider;
-  private serviceName: string;
 
-  constructor(cloudProvider: CloudSecretsProvider, serviceName: string) {
+  constructor(cloudProvider: CloudSecretsProvider) {
     this.cloudProvider = cloudProvider;
-    this.serviceName = serviceName;
   }
 
   /**
-   * Get a single secret by key
-   * Delegates to cloud provider's get() which handles shared → service-scoped fallback
+   * Read one secret from one scope
    */
-  async get(key: string): Promise<string> {
-    const value = await this.cloudProvider.get(key);
-    if (value === null) {
-      throw new Error(
-        `Secret "${key}" not found in ${this.cloudProvider.getProviderName()} ` +
-          `for service "${this.serviceName}" or shared scope.`,
-      );
-    }
-    return value;
-  }
-
-  /**
-   * Set a secret value
-   * Adds metadata to indicate it's a user-managed secret
-   */
-  async set(key: string, value: string): Promise<void> {
-    await this.cloudProvider.set(key, value, {
-      'secret-type': 'user',
-      'managed-by': 'tsdevstack',
-    });
-  }
-
-  /**
-   * Delete a secret
-   */
-  async delete(key: string): Promise<void> {
-    await this.cloudProvider.remove(key);
+  async read(key: string, scope: string): Promise<string | null> {
+    return this.cloudProvider.read(key, scope);
   }
 
   /**
@@ -58,15 +30,5 @@ export class CloudProviderAdapter implements SecretsProvider {
    */
   getName(): string {
     return this.cloudProvider.getProviderName();
-  }
-
-  /**
-   * Clear cache
-   * Cloud providers don't expose cache clearing, so this is a no-op
-   * The cache will expire naturally based on TTL
-   */
-  clearCache(): void {
-    // No-op for cloud providers
-    // Cache expires automatically based on 5-minute TTL
   }
 }

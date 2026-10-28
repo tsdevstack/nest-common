@@ -2,21 +2,35 @@ import { SecretClient } from '@azure/keyvault-secrets';
 import {
   DefaultAzureCredential,
   ClientSecretCredential,
+  ManagedIdentityCredential,
 } from '@azure/identity';
 import type { TokenCredential } from '@azure/identity';
 import {
   CloudSecretsProvider,
   CloudProviderConfig,
-  CacheEntry,
 } from './cloud-provider.interface';
+import {
+  AZURE_SECRET_NOT_FOUND_STATUS,
+  SHARED_SECRETS_SCOPE,
+} from '../secrets.constants';
 
+/**
+ * Azure Key Vault secrets provider
+ *
+ * The shared scope lives in the shared vault (AZURE_KEYVAULT_NAME), the
+ * service's own scope in its own vault (AZURE_SERVICE_KEYVAULT_NAME). The
+ * service reads both with its own identity (AZURE_SECRETS_CLIENT_ID), which
+ * has access to these two vaults only.
+ *
+ * Without AZURE_SERVICE_KEYVAULT_NAME (a container deployed by an older CLI)
+ * the service's scope is read from the shared vault, where it lived then.
+ */
 export class AzureSecretsProvider implements CloudSecretsProvider {
-  private client: SecretClient;
+  private sharedClient: SecretClient;
+  private serviceClient: SecretClient;
   private projectName: string;
   private serviceName: string;
   private keyVaultName: string;
-  private cache: Map<string, CacheEntry> = new Map();
-  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(config: CloudProviderConfig) {
     this.projectName = config.projectName;
@@ -33,133 +47,89 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
       );
     }
 
-    // Credential strategy:
-    // 1. If AZURE_CLIENT_SECRET is set → use ClientSecretCredential (backward compat / local dev)
-    // 2. Otherwise → use DefaultAzureCredential (managed identity in Container Apps)
-    const tenantId = process.env.AZURE_TENANT_ID;
-    const clientId = process.env.AZURE_CLIENT_ID;
-    const clientSecret = process.env.AZURE_CLIENT_SECRET;
+    const credential = this.createCredential();
+    this.sharedClient = this.createClient(this.keyVaultName, credential);
 
-    let credential: TokenCredential;
-
-    if (tenantId && clientId && clientSecret) {
-      credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
-    } else {
-      // DefaultAzureCredential picks up managed identity in Azure.
-      // AZURE_CLIENT_ID selects the user-assigned identity.
-      credential = new DefaultAzureCredential();
-    }
-
-    const vaultUrl = `https://${this.keyVaultName}.vault.azure.net`;
-    this.client = new SecretClient(vaultUrl, credential);
+    const serviceKeyVaultName =
+      process.env.AZURE_SERVICE_KEYVAULT_NAME ||
+      (config.providerConfig?.serviceKeyVaultName as string | undefined);
+    this.serviceClient = serviceKeyVaultName
+      ? this.createClient(serviceKeyVaultName, credential)
+      : this.sharedClient;
   }
 
   /**
-   * Get secret with shared → service-scoped fallback and caching
+   * Read {project}-{scope}-{key} (key with hyphens for underscores) from the
+   * scope's vault
    */
-  async get(key: string): Promise<string | null> {
-    // Check cache first
-    const cached = this.getFromCache(key);
-    if (cached !== null) {
-      return cached;
-    }
-
-    // Shared scope first: every runtime-read secret lives in shared (the
-    // only service-scoped secret, DATABASE_URL, is injected as an env var
-    // at deploy time and never read here). Scoped-first meant a
-    // guaranteed-404 round-trip on every cache-miss lookup.
-    const sharedScopedName = this.buildSecretName(key, 'shared');
-    let value = await this.fetchSecretFromAzure(sharedScopedName);
-
-    // Fall back to service scope for explicitly scoped secrets
-    if (value === null) {
-      const serviceScopedName = this.buildSecretName(key, this.serviceName);
-      value = await this.fetchSecretFromAzure(serviceScopedName);
-    }
-
-    // Cache the result (including null to avoid repeated lookups)
-    if (value !== null) {
-      this.setCache(key, value);
-    }
-
-    return value;
-  }
-
-  /**
-   * Set a secret with optional metadata tags
-   */
-  async set(
-    key: string,
-    value: string,
-    metadata?: Record<string, string>,
-  ): Promise<void> {
-    const secretName = this.buildSecretName(key, this.serviceName);
+  async read(key: string, scope: string): Promise<string | null> {
+    const secretName = this.buildSecretName(key, scope);
 
     try {
-      // Build tags (Azure limit: 15 tags)
-      const tags = this.buildTags(metadata);
-
-      // Set the secret with tags
-      await this.client.setSecret(secretName, value, { tags });
-
-      // Invalidate cache
-      this.invalidateCache(key);
+      const secret = await this.clientFor(scope).getSecret(secretName);
+      return secret.value ?? null;
     } catch (error) {
+      if (
+        (error as { statusCode?: number })?.statusCode ===
+        AZURE_SECRET_NOT_FOUND_STATUS
+      ) {
+        return null;
+      }
       throw new Error(
-        `Failed to set secret ${secretName} in Azure: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read secret ${secretName} from Azure: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
-    }
-  }
-
-  /**
-   * Remove a secret
-   * Note: Azure soft-deletes secrets by default (recoverable for 90 days)
-   */
-  async remove(key: string): Promise<void> {
-    const secretName = this.buildSecretName(key, this.serviceName);
-
-    try {
-      const poller = await this.client.beginDeleteSecret(secretName);
-      await poller.pollUntilDone();
-
-      // Invalidate cache
-      this.invalidateCache(key);
-    } catch (error) {
-      throw new Error(
-        `Failed to remove secret ${secretName} from Azure: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  /**
-   * Check if a secret exists (checks both shared and service-scoped)
-   */
-  async exists(key: string): Promise<boolean> {
-    // Check shared scope first (same ordering rationale as get())
-    const sharedScopedName = this.buildSecretName(key, 'shared');
-
-    try {
-      await this.client.getSecret(sharedScopedName);
-      return true;
-    } catch {
-      // Secret doesn't exist, check service scope
-    }
-
-    // Check service scope
-    const serviceScopedName = this.buildSecretName(key, this.serviceName);
-
-    try {
-      await this.client.getSecret(serviceScopedName);
-      return true;
-    } catch {
-      return false;
     }
   }
 
   getProviderName(): string {
     return 'azure';
+  }
+
+  /**
+   * Credential strategy:
+   * 1. AZURE_SECRETS_CLIENT_ID → the service's own managed identity (Container Apps)
+   * 2. AZURE_CLIENT_SECRET with tenant and client → ClientSecretCredential (local dev)
+   * 3. Otherwise → DefaultAzureCredential
+   */
+  private createCredential(): TokenCredential {
+    const secretsClientId = process.env.AZURE_SECRETS_CLIENT_ID;
+    if (secretsClientId) {
+      return new ManagedIdentityCredential({ clientId: secretsClientId });
+    }
+
+    const tenantId = process.env.AZURE_TENANT_ID;
+    const clientId = process.env.AZURE_CLIENT_ID;
+    const clientSecret = process.env.AZURE_CLIENT_SECRET;
+    if (tenantId && clientId && clientSecret) {
+      return new ClientSecretCredential(tenantId, clientId, clientSecret);
+    }
+
+    // DefaultAzureCredential picks up managed identity in Azure.
+    // AZURE_CLIENT_ID selects the user-assigned identity.
+    return new DefaultAzureCredential();
+  }
+
+  private createClient(
+    vaultName: string,
+    credential: TokenCredential,
+  ): SecretClient {
+    return new SecretClient(`https://${vaultName}.vault.azure.net`, credential);
+  }
+
+  /**
+   * The vault of a scope. A service reads only its own scope and the shared one.
+   */
+  private clientFor(scope: string): SecretClient {
+    if (scope === SHARED_SECRETS_SCOPE) {
+      return this.sharedClient;
+    }
+    if (scope === this.serviceName) {
+      return this.serviceClient;
+    }
+    throw new Error(
+      `Service "${this.serviceName}" cannot read the secret scope "${scope}"`,
+    );
   }
 
   /**
@@ -173,93 +143,11 @@ export class AzureSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Name prefixes of the scopes list() returns: shared, and this service when
-   * a service name is set. Built like the names get() reads (only the key is
-   * transformed, so the prefix is `${projectName}-${scope}-`).
-   */
-  private buildScopePrefixes(): string[] {
-    const scopes = this.serviceName ? ['shared', this.serviceName] : ['shared'];
-    return scopes.map((scope) => this.buildSecretName('', scope));
-  }
-
-  /**
-   * Fetch secret value from Azure
-   */
-  private async fetchSecretFromAzure(
-    secretName: string,
-  ): Promise<string | null> {
-    try {
-      const secret = await this.client.getSecret(secretName);
-      return secret.value || null;
-    } catch {
-      // Secret doesn't exist or access denied
-      return null;
-    }
-  }
-
-  /**
-   * Build Azure tags from metadata
-   * Azure supports up to 15 tags per secret
-   */
-  private buildTags(metadata?: Record<string, string>): Record<string, string> {
-    const tags: Record<string, string> = {
-      'project-name': this.projectName,
-      'service-name': this.serviceName,
-      'managed-by': 'tsdevstack',
-    };
-
-    if (metadata) {
-      for (const [key, value] of Object.entries(metadata)) {
-        tags[key] = value;
-      }
-    }
-
-    return tags;
-  }
-
-  /**
    * Transform key to Azure-compatible format
    * Azure Key Vault only allows alphanumeric and hyphens
    * DATABASE_URL → DATABASE-URL
    */
   private transformKey(key: string): string {
     return key.replace(/_/g, '-');
-  }
-
-  /**
-   * Reverse transform Azure key back to standard format
-   * DATABASE-URL → DATABASE_URL
-   */
-  private reverseTransformKey(key: string): string {
-    return key.replace(/-/g, '_');
-  }
-
-  /**
-   * Cache management methods
-   */
-  private getFromCache(key: string): string | null {
-    const entry = this.cache.get(key);
-    if (!entry) {
-      return null;
-    }
-
-    // Check if expired
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-
-    return entry.value;
-  }
-
-  private setCache(key: string, value: string): void {
-    this.cache.set(key, {
-      value,
-      expiresAt: Date.now() + this.CACHE_TTL_MS,
-    });
-  }
-
-  private invalidateCache(key: string): void {
-    this.cache.delete(key);
   }
 }

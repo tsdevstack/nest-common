@@ -4,18 +4,13 @@ import type { CloudProviderConfig } from './cloud-provider.interface';
 
 // Mock GCP Secret Manager client
 const mockAccessSecretVersion = rs.fn();
-const mockCreateSecret = rs.fn();
-const mockAddSecretVersion = rs.fn();
-const mockDeleteSecret = rs.fn();
-const mockGetSecret = rs.fn();
+
+// What the client throws for a missing secret (gRPC NOT_FOUND)
+const NOT_FOUND = Object.assign(new Error('NOT_FOUND'), { code: 5 });
 
 rs.mock('@google-cloud/secret-manager', () => ({
   SecretManagerServiceClient: class {
     accessSecretVersion = mockAccessSecretVersion;
-    createSecret = mockCreateSecret;
-    addSecretVersion = mockAddSecretVersion;
-    deleteSecret = mockDeleteSecret;
-    getSecret = mockGetSecret;
   },
 }));
 
@@ -70,13 +65,13 @@ describe('GCPSecretsProvider', () => {
     });
   });
 
-  describe('get', () => {
-    it('should get shared secret with a single lookup', async () => {
+  describe('read', () => {
+    it('should read the exact name of the scope', async () => {
       mockAccessSecretVersion.mockResolvedValue([
         { payload: { data: Buffer.from('shared-value') } },
       ]);
 
-      const result = await provider.get('SOME_SECRET');
+      const result = await provider.read('SOME_SECRET', 'shared');
 
       expect(result).toBe('shared-value');
       expect(mockAccessSecretVersion).toHaveBeenCalledTimes(1);
@@ -85,200 +80,45 @@ describe('GCPSecretsProvider', () => {
       });
     });
 
-    it('should fall back to service-scoped secret when shared does not exist', async () => {
-      mockAccessSecretVersion
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared fails
-        .mockResolvedValueOnce([
-          { payload: { data: Buffer.from('service-value') } },
-        ]); // service-scoped succeeds
+    it("should read the service's own scope by its name", async () => {
+      mockAccessSecretVersion.mockResolvedValue([
+        { payload: { data: Buffer.from('service-value') } },
+      ]);
 
-      const result = await provider.get('SOME_SECRET');
-
-      expect(result).toBe('service-value');
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(2);
-      expect(mockAccessSecretVersion).toHaveBeenNthCalledWith(2, {
+      await expect(provider.read('SOME_SECRET', 'test-service')).resolves.toBe(
+        'service-value',
+      );
+      expect(mockAccessSecretVersion).toHaveBeenCalledWith({
         name: 'projects/gcp-project-123/secrets/testproject-test-service-SOME_SECRET/versions/latest',
       });
     });
 
-    it('should return null when neither scope exists', async () => {
-      mockAccessSecretVersion.mockRejectedValue(new Error('NOT_FOUND'));
+    it('should return null when the secret does not exist', async () => {
+      mockAccessSecretVersion.mockRejectedValue(NOT_FOUND);
 
-      const result = await provider.get('NONEXISTENT');
-
-      expect(result).toBeNull();
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(2);
+      await expect(provider.read('NONEXISTENT', 'shared')).resolves.toBeNull();
     });
 
-    it('should cache successful results', async () => {
-      mockAccessSecretVersion.mockResolvedValue([
-        { payload: { data: Buffer.from('cached-value') } },
-      ]);
+    it('should throw, not report a missing secret, when access is denied', async () => {
+      mockAccessSecretVersion.mockRejectedValue(
+        Object.assign(new Error('PERMISSION_DENIED'), { code: 7 }),
+      );
 
-      await provider.get('CACHED_KEY');
-      await provider.get('CACHED_KEY');
-
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(1); // Only once due to cache
+      await expect(provider.read('KEY', 'shared')).rejects.toThrow(
+        'Failed to read secret testproject-shared-KEY from GCP: PERMISSION_DENIED',
+      );
     });
 
     it('should handle empty payload data', async () => {
       mockAccessSecretVersion.mockResolvedValue([{ payload: {} }]);
 
-      const result = await provider.get('KEY');
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('set', () => {
-    it('should create new secret when it does not exist', async () => {
-      mockGetSecret
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared exists check
-        .mockRejectedValueOnce(new Error('NOT_FOUND')); // service exists check
-      mockCreateSecret.mockResolvedValue([{}]);
-      mockAddSecretVersion.mockResolvedValue([{}]);
-
-      await provider.set('NEW_KEY', 'new-value');
-
-      expect(mockCreateSecret).toHaveBeenCalledTimes(1);
-      expect(mockAddSecretVersion).toHaveBeenCalledTimes(1);
-    });
-
-    it('should update existing secret without creating', async () => {
-      mockGetSecret.mockResolvedValue([{ name: 'existing-secret' }]);
-      mockAddSecretVersion.mockResolvedValue([{}]);
-
-      await provider.set('EXISTING_KEY', 'updated-value');
-
-      expect(mockCreateSecret).not.toHaveBeenCalled();
-      expect(mockAddSecretVersion).toHaveBeenCalledTimes(1);
-    });
-
-    it('should set secret with metadata labels', async () => {
-      mockGetSecret.mockRejectedValue(new Error('NOT_FOUND'));
-      mockCreateSecret.mockResolvedValue([{}]);
-      mockAddSecretVersion.mockResolvedValue([{}]);
-
-      await provider.set('KEY', 'value', { environment: 'staging' });
-
-      expect(mockCreateSecret).toHaveBeenCalledWith(
-        expect.objectContaining({
-          secret: expect.objectContaining({
-            labels: expect.objectContaining({
-              'project-name': 'testproject',
-              'service-name': 'test-service',
-              'managed-by': 'tsdevstack',
-              environment: 'staging',
-            }),
-          }),
-        }),
-      );
-    });
-
-    it('should throw error on failure', async () => {
-      mockGetSecret.mockRejectedValue(new Error('NOT_FOUND'));
-      mockCreateSecret.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(provider.set('KEY', 'value')).rejects.toThrow(
-        'Failed to set secret',
-      );
-    });
-  });
-
-  describe('remove', () => {
-    it('should delete secret', async () => {
-      mockDeleteSecret.mockResolvedValue([{}]);
-
-      await provider.remove('KEY_TO_DELETE');
-
-      expect(mockDeleteSecret).toHaveBeenCalledTimes(1);
-    });
-
-    it('should throw error on failure', async () => {
-      mockDeleteSecret.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(provider.remove('KEY')).rejects.toThrow(
-        'Failed to remove secret',
-      );
-    });
-  });
-
-  describe('exists', () => {
-    it('should return true when shared secret exists', async () => {
-      mockGetSecret.mockResolvedValue([{ name: 'secret-name' }]);
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockGetSecret).toHaveBeenCalledTimes(1);
-      expect(mockGetSecret).toHaveBeenCalledWith({
-        name: 'projects/gcp-project-123/secrets/testproject-shared-KEY',
-      });
-    });
-
-    it('should check service scope if shared does not exist', async () => {
-      mockGetSecret
-        .mockRejectedValueOnce(new Error('NOT_FOUND')) // shared
-        .mockResolvedValueOnce([{ name: 'service-secret' }]); // service-scoped
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
-      expect(mockGetSecret).toHaveBeenNthCalledWith(2, {
-        name: 'projects/gcp-project-123/secrets/testproject-test-service-KEY',
-      });
-    });
-
-    it('should return false when secret does not exist', async () => {
-      mockGetSecret.mockRejectedValue(new Error('NOT_FOUND'));
-
-      const result = await provider.exists('NONEXISTENT');
-
-      expect(result).toBe(false);
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
+      await expect(provider.read('KEY', 'shared')).resolves.toBeNull();
     });
   });
 
   describe('getProviderName', () => {
     it('should return "gcp"', () => {
       expect(provider.getProviderName()).toBe('gcp');
-    });
-  });
-
-  describe('caching', () => {
-    it('should cache values and not refetch within TTL', async () => {
-      mockAccessSecretVersion.mockResolvedValue([
-        { payload: { data: Buffer.from('cached-value') } },
-      ]);
-
-      await provider.get('KEY');
-      await provider.get('KEY');
-      await provider.get('KEY');
-
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(1);
-    });
-
-    it('should invalidate cache after set', async () => {
-      // First, cache a value
-      mockAccessSecretVersion.mockResolvedValue([
-        { payload: { data: Buffer.from('old-value') } },
-      ]);
-      await provider.get('KEY');
-
-      // Set a new value
-      mockGetSecret.mockResolvedValue([{ name: 'exists' }]);
-      mockAddSecretVersion.mockResolvedValue([{}]);
-      await provider.set('KEY', 'new-value');
-
-      // Get again should fetch from GCP
-      mockAccessSecretVersion.mockResolvedValue([
-        { payload: { data: Buffer.from('new-value') } },
-      ]);
-      const result = await provider.get('KEY');
-
-      expect(result).toBe('new-value');
-      expect(mockAccessSecretVersion).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -4,14 +4,17 @@ import type { CloudProviderConfig } from './cloud-provider.interface';
 
 // Mock Azure SDK
 const mockGetSecret = rs.fn();
-const mockSetSecret = rs.fn();
-const mockBeginDeleteSecret = rs.fn();
+// Which vault each call went to: (vault URL, secret name)
+const mockVaultCall = rs.fn();
+const mockManagedIdentityCredential = rs.fn();
 
 rs.mock('@azure/keyvault-secrets', () => ({
   SecretClient: class {
-    getSecret = mockGetSecret;
-    setSecret = mockSetSecret;
-    beginDeleteSecret = mockBeginDeleteSecret;
+    constructor(private readonly vaultUrl: string) {}
+    getSecret = (name: string) => {
+      mockVaultCall(this.vaultUrl, name);
+      return mockGetSecret(name);
+    };
   },
 }));
 
@@ -22,7 +25,17 @@ rs.mock('@azure/identity', () => ({
   DefaultAzureCredential: class {
     constructor() {}
   },
+  ManagedIdentityCredential: class {
+    constructor(options: unknown) {
+      mockManagedIdentityCredential(options);
+    }
+  },
 }));
+
+// What the SDK throws for a missing secret
+const NOT_FOUND = Object.assign(new Error('SecretNotFound'), {
+  statusCode: 404,
+});
 
 describe('AzureSecretsProvider', () => {
   let provider: AzureSecretsProvider;
@@ -117,11 +130,11 @@ describe('AzureSecretsProvider', () => {
     });
   });
 
-  describe('get', () => {
-    it('should get shared secret with a single lookup', async () => {
+  describe('read', () => {
+    it('should read the exact name of the scope', async () => {
       mockGetSecret.mockResolvedValue({ value: 'shared-value' });
 
-      const result = await provider.get('SOME_SECRET');
+      const result = await provider.read('SOME_SECRET', 'shared');
 
       expect(result).toBe('shared-value');
       expect(mockGetSecret).toHaveBeenCalledTimes(1);
@@ -130,171 +143,48 @@ describe('AzureSecretsProvider', () => {
       );
     });
 
-    it('should fall back to service-scoped secret when shared does not exist', async () => {
-      mockGetSecret
-        .mockRejectedValueOnce(new Error('Not found')) // shared fails
-        .mockResolvedValueOnce({ value: 'service-value' }); // service-scoped succeeds
+    it("should read the service's own scope by its name", async () => {
+      mockGetSecret.mockResolvedValue({ value: 'service-value' });
 
-      const result = await provider.get('SOME_SECRET');
-
-      expect(result).toBe('service-value');
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
-      expect(mockGetSecret).toHaveBeenNthCalledWith(
-        2,
+      await expect(provider.read('SOME_SECRET', 'test-service')).resolves.toBe(
+        'service-value',
+      );
+      expect(mockGetSecret).toHaveBeenCalledWith(
         'testproject-test-service-SOME-SECRET',
       );
     });
 
-    it('should return null when neither scope exists', async () => {
-      mockGetSecret.mockRejectedValue(new Error('Not found'));
+    it('should return null when the secret does not exist', async () => {
+      mockGetSecret.mockRejectedValue(NOT_FOUND);
 
-      const result = await provider.get('NONEXISTENT');
-
-      expect(result).toBeNull();
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
+      await expect(provider.read('NONEXISTENT', 'shared')).resolves.toBeNull();
     });
 
-    it('should cache successful results', async () => {
-      mockGetSecret.mockResolvedValue({ value: 'cached-value' });
+    it('should throw, not report a missing secret, when access is denied', async () => {
+      mockGetSecret.mockRejectedValue(
+        Object.assign(new Error('Forbidden'), { statusCode: 403 }),
+      );
 
-      await provider.get('CACHED_KEY');
-      await provider.get('CACHED_KEY');
-
-      expect(mockGetSecret).toHaveBeenCalledTimes(1); // Only once due to cache
+      await expect(provider.read('KEY', 'shared')).rejects.toThrow(
+        'Failed to read secret testproject-shared-KEY from Azure: Forbidden',
+      );
     });
 
     it('should transform key with underscores to hyphens', async () => {
       mockGetSecret.mockResolvedValue({ value: 'value' });
 
-      await provider.get('DATABASE_URL');
+      await provider.read('DATABASE_URL_MAIN', 'shared');
 
       // Azure call should use hyphens instead of underscores
       expect(mockGetSecret).toHaveBeenCalledWith(
-        'testproject-shared-DATABASE-URL',
+        'testproject-shared-DATABASE-URL-MAIN',
       );
     });
 
     it('should handle null value from Azure', async () => {
       mockGetSecret.mockResolvedValue({ value: null });
 
-      const result = await provider.get('KEY');
-
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('set', () => {
-    it('should set secret with tags', async () => {
-      mockSetSecret.mockResolvedValue({});
-
-      await provider.set('NEW_KEY', 'new-value');
-
-      expect(mockSetSecret).toHaveBeenCalledWith(
-        'testproject-test-service-NEW-KEY', // transformed name
-        'new-value',
-        expect.objectContaining({
-          tags: expect.objectContaining({
-            'project-name': 'testproject',
-            'service-name': 'test-service',
-            'managed-by': 'tsdevstack',
-          }),
-        }),
-      );
-    });
-
-    it('should set secret with custom metadata', async () => {
-      mockSetSecret.mockResolvedValue({});
-
-      await provider.set('KEY', 'value', { environment: 'staging' });
-
-      expect(mockSetSecret).toHaveBeenCalledWith(
-        expect.any(String),
-        'value',
-        expect.objectContaining({
-          tags: expect.objectContaining({
-            environment: 'staging',
-          }),
-        }),
-      );
-    });
-
-    it('should throw error on failure', async () => {
-      mockSetSecret.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(provider.set('KEY', 'value')).rejects.toThrow(
-        'Failed to set secret',
-      );
-    });
-
-    it('should invalidate cache after set', async () => {
-      // Cache a value
-      mockGetSecret.mockResolvedValue({ value: 'old-value' });
-      await provider.get('KEY');
-      expect(mockGetSecret).toHaveBeenCalledTimes(1);
-
-      // Set new value
-      mockSetSecret.mockResolvedValue({});
-      await provider.set('KEY', 'new-value');
-
-      // Get should refetch
-      mockGetSecret.mockResolvedValue({ value: 'new-value' });
-      await provider.get('KEY');
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('remove', () => {
-    it('should delete secret', async () => {
-      const mockPoller = {
-        pollUntilDone: rs.fn().mockResolvedValue({}),
-      };
-      mockBeginDeleteSecret.mockResolvedValue(mockPoller);
-
-      await provider.remove('KEY_TO_DELETE');
-
-      expect(mockBeginDeleteSecret).toHaveBeenCalledWith(
-        'testproject-test-service-KEY-TO-DELETE',
-      );
-      expect(mockPoller.pollUntilDone).toHaveBeenCalled();
-    });
-
-    it('should throw error on failure', async () => {
-      mockBeginDeleteSecret.mockRejectedValue(new Error('Permission denied'));
-
-      await expect(provider.remove('KEY')).rejects.toThrow(
-        'Failed to remove secret',
-      );
-    });
-  });
-
-  describe('exists', () => {
-    it('should return true when shared secret exists', async () => {
-      mockGetSecret.mockResolvedValue({ value: 'value' });
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockGetSecret).toHaveBeenCalledTimes(1);
-    });
-
-    it('should check service scope if shared does not exist', async () => {
-      mockGetSecret
-        .mockRejectedValueOnce(new Error('Not found')) // shared
-        .mockResolvedValueOnce({ value: 'service-value' }); // service-scoped
-
-      const result = await provider.exists('KEY');
-
-      expect(result).toBe(true);
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
-    });
-
-    it('should return false when secret does not exist', async () => {
-      mockGetSecret.mockRejectedValue(new Error('Not found'));
-
-      const result = await provider.exists('NONEXISTENT');
-
-      expect(result).toBe(false);
-      expect(mockGetSecret).toHaveBeenCalledTimes(2);
+      await expect(provider.read('KEY', 'shared')).resolves.toBeNull();
     });
   });
 
@@ -303,16 +193,62 @@ describe('AzureSecretsProvider', () => {
       expect(provider.getProviderName()).toBe('azure');
     });
   });
+  describe('vaults', () => {
+    const config: CloudProviderConfig = {
+      projectName: 'testproject',
+      serviceName: 'test-service',
+      providerConfig: { keyVaultName: 'test-keyvault' },
+    };
 
-  describe('key transformation', () => {
-    it('should transform underscores to hyphens for Azure compatibility', async () => {
-      mockGetSecret.mockResolvedValue({ value: 'value' });
+    it('should read the shared scope from the shared vault and the own scope from the service vault', async () => {
+      process.env.AZURE_SERVICE_KEYVAULT_NAME = 'test-service-vault';
+      mockGetSecret.mockResolvedValue({ value: 'v' });
+      const p = new AzureSecretsProvider(config);
 
-      await provider.get('DATABASE_URL_MAIN');
+      await p.read('KONG_TRUST_TOKEN', 'shared');
+      await p.read('ADMIN_EMAILS', 'test-service');
 
-      expect(mockGetSecret).toHaveBeenCalledWith(
-        'testproject-shared-DATABASE-URL-MAIN',
+      expect(mockVaultCall).toHaveBeenCalledWith(
+        'https://test-keyvault.vault.azure.net',
+        'testproject-shared-KONG-TRUST-TOKEN',
       );
+      expect(mockVaultCall).toHaveBeenCalledWith(
+        'https://test-service-vault.vault.azure.net',
+        'testproject-test-service-ADMIN-EMAILS',
+      );
+    });
+
+    it('should read the own scope from the shared vault for a container deployed by an older CLI', async () => {
+      delete process.env.AZURE_SERVICE_KEYVAULT_NAME;
+      mockGetSecret.mockResolvedValue({ value: 'v' });
+
+      await new AzureSecretsProvider(config).read(
+        'ADMIN_EMAILS',
+        'test-service',
+      );
+
+      expect(mockVaultCall).toHaveBeenCalledWith(
+        'https://test-keyvault.vault.azure.net',
+        'testproject-test-service-ADMIN-EMAILS',
+      );
+    });
+
+    it("should refuse to read another service's scope", async () => {
+      await expect(
+        new AzureSecretsProvider(config).read('ADMIN_EMAILS', 'auth-service'),
+      ).rejects.toThrow(
+        'Service "test-service" cannot read the secret scope "auth-service"',
+      );
+    });
+
+    it("should use the service's own identity when AZURE_SECRETS_CLIENT_ID is set", () => {
+      process.env.AZURE_SECRETS_CLIENT_ID = 'secrets-client-id';
+
+      new AzureSecretsProvider(config);
+
+      expect(mockManagedIdentityCredential).toHaveBeenCalledWith({
+        clientId: 'secrets-client-id',
+      });
     });
   });
 });

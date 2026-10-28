@@ -3,8 +3,8 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import {
   CloudSecretsProvider,
   CloudProviderConfig,
-  CacheEntry,
 } from './cloud-provider.interface';
+import { GCP_SECRET_NOT_FOUND_CODE } from '../secrets.constants';
 
 export class GCPSecretsProvider implements CloudSecretsProvider {
   private readonly logger = new Logger('GCPSecretsProvider');
@@ -12,8 +12,6 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
   private projectName: string;
   private serviceName: string;
   private gcpProjectId: string;
-  private cache: Map<string, CacheEntry> = new Map();
-  private readonly CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
   constructor(config: CloudProviderConfig) {
     this.projectName = config.projectName;
@@ -41,142 +39,30 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
   }
 
   /**
-   * Get secret with shared → service-scoped fallback and caching
+   * Read the latest version of {project}-{scope}-{key}
    */
-  async get(key: string): Promise<string | null> {
-    // Check cache first
-    const cached = this.getFromCache(key);
-    if (cached !== null) {
-      this.logger.debug(`Cache hit for: ${key}`);
-      return cached;
-    }
-
-    // Shared scope first: every runtime-read secret lives in shared (the
-    // only service-scoped secret, DATABASE_URL, is injected as an env var
-    // at deploy time and never read here). Scoped-first meant a
-    // guaranteed-404 round-trip on every cache-miss lookup. API_KEY is
-    // resolved to {SERVICE}_API_KEY by SecretsService, for every provider.
-    const sharedScopedName = this.buildSecretName(key, 'shared');
-    let value = await this.fetchSecretFromGCP(sharedScopedName);
-
-    // Fall back to service scope for explicitly scoped secrets
-    if (value === null) {
-      const serviceScopedName = this.buildSecretName(key, this.serviceName);
-      value = await this.fetchSecretFromGCP(serviceScopedName);
-    }
-
-    // Cache the result (including null to avoid repeated lookups)
-    if (value !== null) {
-      this.logger.debug(`Secret found: ${key}`);
-      this.setCache(key, value);
-    } else {
-      this.logger.warn(`Secret not found: ${key}`);
-    }
-
-    return value;
-  }
-
-  /**
-   * Set a secret with optional metadata labels
-   */
-  async set(
-    key: string,
-    value: string,
-    metadata?: Record<string, string>,
-  ): Promise<void> {
-    const secretName = this.buildSecretName(key, this.serviceName);
-    const parent = `projects/${this.gcpProjectId}`;
-    const secretId = this.extractSecretId(secretName);
+  async read(key: string, scope: string): Promise<string | null> {
+    const secretId = this.buildSecretName(key, scope);
+    const versionName = `projects/${this.gcpProjectId}/secrets/${secretId}/versions/latest`;
 
     try {
-      // Check if secret exists
-      const exists = await this.exists(key);
+      const [version] = await this.client.accessSecretVersion({
+        name: versionName,
+      });
 
-      if (!exists) {
-        // Create new secret with labels
-        await this.client.createSecret({
-          parent,
-          secretId,
-          secret: {
-            replication: {
-              automatic: {},
-            },
-            labels: this.buildLabels(metadata),
-          },
-        });
+      if (!version.payload?.data) {
+        return null;
       }
 
-      // Add new version with the value
-      await this.client.addSecretVersion({
-        parent: `${parent}/secrets/${secretId}`,
-        payload: {
-          data: Buffer.from(value, 'utf8'),
-        },
-      });
-
-      // Invalidate cache
-      this.invalidateCache(key);
+      return version.payload.data.toString();
     } catch (error) {
+      if (this.isNotFound(error)) {
+        return null;
+      }
       throw new Error(
-        `Failed to set secret ${secretName} in GCP: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to read secret ${secretId} from GCP: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
-    }
-  }
-
-  /**
-   * Remove a secret
-   */
-  async remove(key: string): Promise<void> {
-    const secretName = this.buildSecretName(key, this.serviceName);
-    const parent = `projects/${this.gcpProjectId}`;
-    const secretId = this.extractSecretId(secretName);
-
-    try {
-      await this.client.deleteSecret({
-        name: `${parent}/secrets/${secretId}`,
-      });
-
-      // Invalidate cache
-      this.invalidateCache(key);
-    } catch (error) {
-      throw new Error(
-        `Failed to remove secret ${secretName} from GCP: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error },
-      );
-    }
-  }
-
-  /**
-   * Check if a secret exists (checks both shared and service-scoped)
-   */
-  async exists(key: string): Promise<boolean> {
-    const parent = `projects/${this.gcpProjectId}`;
-
-    // Check shared scope first (same ordering rationale as get())
-    const sharedScopedName = this.buildSecretName(key, 'shared');
-    const sharedScopedId = this.extractSecretId(sharedScopedName);
-
-    try {
-      await this.client.getSecret({
-        name: `${parent}/secrets/${sharedScopedId}`,
-      });
-      return true;
-    } catch {
-      // Secret doesn't exist, check service scope
-    }
-
-    // Check service scope
-    const serviceScopedName = this.buildSecretName(key, this.serviceName);
-    const serviceScopedId = this.extractSecretId(serviceScopedName);
-
-    try {
-      await this.client.getSecret({
-        name: `${parent}/secrets/${serviceScopedId}`,
-      });
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -191,122 +77,7 @@ export class GCPSecretsProvider implements CloudSecretsProvider {
     return `${this.projectName}-${scope}-${key}`;
   }
 
-  /**
-   * Extract secret ID from full secret name
-   * Input: "tsdevstack-auth-service-DATABASE_URL"
-   * Output: "tsdevstack-auth-service-DATABASE_URL"
-   */
-  private extractSecretId(secretName: string): string {
-    return secretName;
-  }
-
-  /**
-   * Name prefixes of the scopes list() returns: shared, and this service when
-   * a service name is set. Built like the names get() reads.
-   */
-  private buildScopePrefixes(): string[] {
-    const scopes = this.serviceName ? ['shared', this.serviceName] : ['shared'];
-    return scopes.map((scope) => this.buildSecretName('', scope));
-  }
-
-  /**
-   * Fetch secret value from GCP
-   */
-  private async fetchSecretFromGCP(secretName: string): Promise<string | null> {
-    const parent = `projects/${this.gcpProjectId}`;
-    const secretId = this.extractSecretId(secretName);
-    const versionName = `${parent}/secrets/${secretId}/versions/latest`;
-
-    try {
-      const [version] = await this.client.accessSecretVersion({
-        name: versionName,
-      });
-
-      if (!version.payload?.data) {
-        return null;
-      }
-
-      return version.payload.data.toString();
-    } catch (error) {
-      const errorCode = (error as { code?: number })?.code;
-
-      // NOT_FOUND (5) is expected when secret doesn't exist - don't log
-      if (errorCode === 5) {
-        return null;
-      }
-
-      // Log all other errors (permission denied, network, timeout, etc.)
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      this.logger.error(`Failed to read ${secretId}: ${errorMessage}`);
-      return null;
-    }
-  }
-
-  /**
-   * Build GCP labels from metadata
-   * GCP supports up to 64 labels per secret
-   */
-  private buildLabels(
-    metadata?: Record<string, string>,
-  ): Record<string, string> {
-    const labels: Record<string, string> = {
-      'project-name': this.projectName,
-      'service-name': this.serviceName,
-      'managed-by': 'tsdevstack',
-    };
-
-    if (metadata) {
-      // GCP label keys must be lowercase, start with letter, and contain only lowercase letters, numbers, hyphens, underscores
-      // Convert keys to lowercase and replace invalid characters
-      for (const [key, value] of Object.entries(metadata)) {
-        const sanitizedKey = key
-          .toLowerCase()
-          .replace(/[^a-z0-9-_]/g, '-')
-          .replace(/^[^a-z]/, 'x');
-        labels[sanitizedKey] = value;
-      }
-    }
-
-    return labels;
-  }
-
-  /**
-   * Cache management methods
-   */
-  private getFromCache(key: string): string | null {
-    const entry = this.cache.get(key);
-    if (!entry) {
-      return null;
-    }
-
-    // Check if expired
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-
-    return entry.value;
-  }
-
-  private setCache(key: string, value: string): void {
-    // Skip caching for URL values - they change during deployments
-    // and dependent services need fresh URLs immediately
-    if (this.isUrlValue(value)) {
-      return;
-    }
-
-    this.cache.set(key, {
-      value,
-      expiresAt: Date.now() + this.CACHE_TTL_MS,
-    });
-  }
-
-  private isUrlValue(value: string): boolean {
-    return value.startsWith('https://') || value.startsWith('http://');
-  }
-
-  private invalidateCache(key: string): void {
-    this.cache.delete(key);
+  private isNotFound(error: unknown): boolean {
+    return (error as { code?: number })?.code === GCP_SECRET_NOT_FOUND_CODE;
   }
 }

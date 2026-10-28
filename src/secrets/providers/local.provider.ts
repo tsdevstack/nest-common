@@ -1,34 +1,26 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { SecretsProvider } from '../secrets.interface';
-
-const execAsync = promisify(exec);
-
-/**
- * Cache entry with expiration
- */
-interface CacheEntry<T> {
-  value: T;
-  expiresAt: number;
-}
+import {
+  LOCAL_SHARED_SECRETS_SECTION,
+  SHARED_SECRETS_SCOPE,
+} from '../secrets.constants';
 
 /**
  * Local Secrets Provider
  *
- * Reads secrets from .secrets.local.json file in the project root.
- * Implements caching with 1-minute TTL for performance.
+ * Reads secrets from .secrets.local.json file in the project root. The file
+ * is read again on every read; SecretsService caches the values.
  *
- * File format:
+ * File format (the top-level `secrets` block is the shared scope):
  * {
+ *   "secrets": {
+ *     "KONG_TRUST_TOKEN": "...",
+ *     "REDIS_PASSWORD": "..."
+ *   },
  *   "auth-service": {
  *     "DATABASE_URL": "postgresql://...",
  *     "AUTH_SECRET": "..."
- *   },
- *   "shared": {
- *     "API_KEY": "...",
- *     "REDIS_PASSWORD": "..."
  *   }
  * }
  */
@@ -36,25 +28,9 @@ export class LocalSecretsProvider implements SecretsProvider {
   private secrets: Record<string, Record<string, string>>;
   private secretsFilePath: string;
 
-  // Cache for individual secrets
-  private cache = new Map<string, CacheEntry<string>>();
-
-  // Cache for entire service configs
-  private serviceCache = new Map<string, CacheEntry<Record<string, string>>>();
-
-  // Cache TTL: 1 minute for local development (60000ms)
-  private readonly cacheTtl: number;
-
-  // Current service name for scoped secret access
-  private serviceName?: string;
-
-  constructor(
-    secretsFilePath: string = '.secrets.local.json',
-    cacheTtl: number = 60000, // 1 minute default
-  ) {
+  constructor(secretsFilePath: string = '.secrets.local.json') {
     // Find the project root (where .secrets.local.json should be)
     this.secretsFilePath = this.findProjectRoot(secretsFilePath);
-    this.cacheTtl = cacheTtl;
     this.secrets = this.loadSecretsFile();
 
     // NODE_ENV hack: Next.js requires this in process.env
@@ -66,15 +42,10 @@ export class LocalSecretsProvider implements SecretsProvider {
   }
 
   /**
-   * Set the service name for scoped secret access
-   * Used when getting secrets without specifying service name
-   *
-   * Also injects DATABASE_URL into process.env for Prisma
+   * Injects the service's DATABASE_URL into process.env for Prisma
    * (Prisma schema uses env("DATABASE_URL") before SecretsService is available)
    */
   setServiceName(serviceName: string): void {
-    this.serviceName = serviceName;
-
     // DATABASE_URL injection: Prisma requires this in process.env
     // Inject service-specific DATABASE_URL if it exists
     const serviceSecrets = this.secrets[serviceName];
@@ -164,165 +135,18 @@ export class LocalSecretsProvider implements SecretsProvider {
   }
 
   /**
-   * Get a single secret by key with caching
-   * Searches in current service's secrets or top-level secrets
+   * Read one secret from one scope: the top-level `secrets` block for the
+   * shared scope, the service's section for its own
    */
-  async get(key: string): Promise<string> {
-    // Check cache first
-    const cached = this.cache.get(key);
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.value;
-    }
-
-    // Cache miss - reload from file
+  async read(key: string, scope: string): Promise<string | null> {
     this.secrets = this.loadSecretsFile();
 
-    // Look for the secret in service scope first, then top-level
-    let value: string | undefined;
+    const section =
+      this.secrets[
+        scope === SHARED_SECRETS_SCOPE ? LOCAL_SHARED_SECRETS_SECTION : scope
+      ];
+    const value = section?.[key];
 
-    if (this.serviceName) {
-      const serviceConfig = this.secrets[this.serviceName];
-      if (serviceConfig && typeof serviceConfig[key] === 'string') {
-        value = serviceConfig[key];
-      }
-    }
-
-    // If not found in service scope, check top-level secrets
-    if (!value) {
-      const topLevelSecrets = this.secrets['secrets'];
-      if (topLevelSecrets && typeof topLevelSecrets[key] === 'string') {
-        value = topLevelSecrets[key];
-      }
-    }
-
-    if (!value) {
-      throw new Error(
-        `Secret "${key}" not found. ` +
-          (this.serviceName
-            ? `Searched in service "${this.serviceName}" and top-level secrets.`
-            : 'Searched in top-level secrets only. Use setServiceName() to search in a specific service.'),
-      );
-    }
-
-    // Cache the value
-    this.cache.set(key, {
-      value,
-      expiresAt: Date.now() + this.cacheTtl,
-    });
-
-    return value;
-  }
-
-  /**
-   * Set a secret value
-   * Updates .secrets.user.json and triggers regeneration
-   */
-  async set(key: string, value: string): Promise<void> {
-    const projectRoot = path.dirname(this.secretsFilePath);
-    const userSecretsPath = path.join(projectRoot, '.secrets.user.json');
-
-    // Read .secrets.user.json
-    interface UserSecretsFile {
-      secrets?: Record<string, string>;
-      [serviceName: string]: unknown;
-    }
-
-    let userSecrets: UserSecretsFile = {};
-    if (fs.existsSync(userSecretsPath)) {
-      const content = fs.readFileSync(userSecretsPath, 'utf-8');
-      userSecrets = JSON.parse(content) as UserSecretsFile;
-    }
-
-    // Ensure secrets section exists
-    if (!userSecrets.secrets) {
-      userSecrets.secrets = {};
-    }
-
-    // Update the key
-    userSecrets.secrets[key] = value;
-
-    // Write back to .secrets.user.json
-    fs.writeFileSync(
-      userSecretsPath,
-      JSON.stringify(userSecrets, null, 2),
-      'utf-8',
-    );
-
-    // Trigger regeneration
-    try {
-      await execAsync('npx tsdevstack generate-secrets', {
-        cwd: projectRoot,
-      });
-    } catch {
-      throw new Error(
-        `Failed to regenerate secrets after setting "${key}". ` +
-          `Manual regeneration may be required: npx tsdevstack generate-secrets`,
-      );
-    }
-
-    // Clear cache
-    this.clearCache();
-  }
-
-  /**
-   * Delete a secret
-   * Removes from .secrets.user.json and triggers regeneration
-   */
-  async delete(key: string): Promise<void> {
-    const projectRoot = path.dirname(this.secretsFilePath);
-    const userSecretsPath = path.join(projectRoot, '.secrets.user.json');
-
-    // Read .secrets.user.json
-    if (!fs.existsSync(userSecretsPath)) {
-      throw new Error(
-        `Cannot delete secret: .secrets.user.json not found at ${userSecretsPath}`,
-      );
-    }
-
-    interface UserSecretsFile {
-      secrets?: Record<string, string>;
-      [serviceName: string]: unknown;
-    }
-
-    const content = fs.readFileSync(userSecretsPath, 'utf-8');
-    const userSecrets = JSON.parse(content) as UserSecretsFile;
-
-    // Remove the key from secrets section
-    if (userSecrets.secrets && userSecrets.secrets[key]) {
-      delete userSecrets.secrets[key];
-
-      // Write back
-      fs.writeFileSync(
-        userSecretsPath,
-        JSON.stringify(userSecrets, null, 2),
-        'utf-8',
-      );
-
-      // Trigger regeneration
-      try {
-        await execAsync('npx tsdevstack generate-secrets', {
-          cwd: projectRoot,
-        });
-      } catch {
-        throw new Error(
-          `Failed to regenerate secrets after deleting "${key}". ` +
-            `Manual regeneration may be required: npx tsdevstack generate-secrets`,
-        );
-      }
-
-      // Clear cache
-      this.clearCache();
-    } else {
-      throw new Error(`Secret "${key}" not found in .secrets.user.json`);
-    }
-  }
-
-  /**
-   * Clear all cached secrets
-   * Forces next get() to reload from file
-   */
-  clearCache(): void {
-    this.cache.clear();
-    this.serviceCache.clear();
+    return typeof value === 'string' ? value : null;
   }
 }

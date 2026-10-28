@@ -4,35 +4,23 @@ import { describe, it, expect, rs, beforeEach, afterEach } from '@rstest/core';
 rs.mock('fs', () => ({
   existsSync: rs.fn(),
   readFileSync: rs.fn(),
-  writeFileSync: rs.fn(),
-}));
-
-// Mock child_process
-rs.mock('child_process', () => ({
-  exec: rs.fn(),
-}));
-
-// Mock util
-rs.mock('util', () => ({
-  promisify: rs.fn((fn) => fn),
 }));
 
 import * as fs from 'fs';
-import { exec } from 'child_process';
 import { LocalSecretsProvider } from './local.provider';
 
 describe('LocalSecretsProvider', () => {
+  // What generate-secrets writes: shared values in the top-level `secrets`
+  // block, each service's own in its section (plus non-string entries)
   const mockSecrets = {
     'auth-service': {
       DATABASE_URL: 'postgresql://localhost:5432/auth',
       JWT_SECRET: 'auth-jwt-secret',
-    },
-    shared: {
-      REDIS_PASSWORD: 'redis-password',
-      API_KEY: 'shared-api-key',
+      secrets: ['JWT_SECRET'],
     },
     secrets: {
       NODE_ENV: 'development',
+      REDIS_PASSWORD: 'redis-password',
     },
   };
 
@@ -89,11 +77,6 @@ describe('LocalSecretsProvider', () => {
       new LocalSecretsProvider('.secrets.local.json');
       expect(process.env.NODE_ENV).toBe('development');
     });
-
-    it('should use custom cache TTL when provided', () => {
-      const provider = new LocalSecretsProvider('.secrets.local.json', 30000);
-      expect(provider.getName()).toBe('local');
-    });
   });
 
   describe('setServiceName', () => {
@@ -120,171 +103,56 @@ describe('LocalSecretsProvider', () => {
     });
   });
 
-  describe('get', () => {
-    it('should get service-scoped secret', async () => {
+  describe('read', () => {
+    it("should read the service's own section", async () => {
       const provider = new LocalSecretsProvider('.secrets.local.json');
-      provider.setServiceName('auth-service');
 
-      const value = await provider.get('DATABASE_URL');
-      expect(value).toBe('postgresql://localhost:5432/auth');
-    });
-
-    it('should fall back to top-level secrets', async () => {
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      provider.setServiceName('auth-service');
-
-      const value = await provider.get('NODE_ENV');
-      expect(value).toBe('development');
-    });
-
-    it('should throw error when secret not found', async () => {
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      provider.setServiceName('auth-service');
-
-      await expect(provider.get('NONEXISTENT')).rejects.toThrow(
-        'Secret "NONEXISTENT" not found',
+      await expect(provider.read('DATABASE_URL', 'auth-service')).resolves.toBe(
+        'postgresql://localhost:5432/auth',
       );
     });
 
-    it('should use cache on subsequent calls', async () => {
+    it('should read the shared scope from the top-level secrets block', async () => {
       const provider = new LocalSecretsProvider('.secrets.local.json');
-      provider.setServiceName('auth-service');
 
-      await provider.get('DATABASE_URL');
-      const readCount = (fs.readFileSync as ReturnType<typeof rs.fn>).mock.calls
-        .length;
-
-      await provider.get('DATABASE_URL');
-      // Should not read file again due to cache
-      expect(
-        (fs.readFileSync as ReturnType<typeof rs.fn>).mock.calls.length,
-      ).toBe(readCount);
-    });
-
-    it('should reload from file after cache expires', async () => {
-      // Use very short TTL
-      const provider = new LocalSecretsProvider('.secrets.local.json', 1);
-      provider.setServiceName('auth-service');
-
-      await provider.get('DATABASE_URL');
-      const initialReadCount = (fs.readFileSync as ReturnType<typeof rs.fn>)
-        .mock.calls.length;
-
-      // Wait for cache to expire
-      await new Promise((resolve) => setTimeout(resolve, 5));
-
-      await provider.get('DATABASE_URL');
-      // Should read file again after cache expires
-      expect(
-        (fs.readFileSync as ReturnType<typeof rs.fn>).mock.calls.length,
-      ).toBeGreaterThan(initialReadCount);
-    });
-  });
-
-  describe('set', () => {
-    it('should update .secrets.user.json and regenerate', async () => {
-      (exec as unknown as ReturnType<typeof rs.fn>).mockImplementation(
-        (
-          _cmd: string,
-          _opts: unknown,
-          cb: (err: null, result: { stdout: string; stderr: string }) => void,
-        ) => {
-          if (typeof cb === 'function') cb(null, { stdout: '', stderr: '' });
-          return Promise.resolve({ stdout: '', stderr: '' });
-        },
-      );
-
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      await provider.set('NEW_KEY', 'new-value');
-
-      expect(fs.writeFileSync).toHaveBeenCalled();
-    });
-
-    it('should create secrets section if not exists', async () => {
-      // Use mockImplementation for complex sequencing
-      let existsSyncCallCount = 0;
-      (fs.existsSync as ReturnType<typeof rs.fn>).mockImplementation(
-        (filePath: string) => {
-          existsSyncCallCount++;
-          // First call is for secrets.local.json (constructor) - return true
-          // Second call is for secrets.user.json (set method) - return false
-          if (existsSyncCallCount === 1) return true;
-          if (filePath.includes('.secrets.user.json')) return false;
-          return true;
-        },
-      );
-      (exec as unknown as ReturnType<typeof rs.fn>).mockImplementation(
-        (
-          _cmd: string,
-          _opts: unknown,
-          cb: (err: null, result: { stdout: string; stderr: string }) => void,
-        ) => {
-          if (typeof cb === 'function') cb(null, { stdout: '', stderr: '' });
-          return Promise.resolve({ stdout: '', stderr: '' });
-        },
-      );
-
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      await provider.set('NEW_KEY', 'new-value');
-
-      expect(fs.writeFileSync).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.stringContaining('"secrets"'),
-        'utf-8',
-      );
-    });
-  });
-
-  describe('delete', () => {
-    it('should throw error if user secrets file not found', async () => {
-      // Use mockImplementation for complex sequencing
-      let existsSyncCallCount = 0;
-      (fs.existsSync as ReturnType<typeof rs.fn>).mockImplementation(
-        (path: string) => {
-          existsSyncCallCount++;
-          // First call is for secrets.local.json (constructor) - return true
-          // Second call is for secrets.user.json (delete method) - return false
-          if (existsSyncCallCount === 1) return true;
-          if (path.includes('.secrets.user.json')) return false;
-          return true;
-        },
-      );
-
-      const provider = new LocalSecretsProvider('.secrets.local.json');
-      await expect(provider.delete('SOME_KEY')).rejects.toThrow(
-        '.secrets.user.json not found',
+      await expect(provider.read('REDIS_PASSWORD', 'shared')).resolves.toBe(
+        'redis-password',
       );
     });
 
-    it('should throw error if secret not found in user secrets', async () => {
-      const userSecrets = { secrets: { OTHER_KEY: 'value' } };
-      (fs.existsSync as ReturnType<typeof rs.fn>).mockReturnValue(true);
-      (fs.readFileSync as ReturnType<typeof rs.fn>)
-        .mockReturnValueOnce(JSON.stringify(mockSecrets)) // for constructor
-        .mockReturnValueOnce(JSON.stringify(userSecrets)); // for delete
-
+    it('should return null when the scope has no such key', async () => {
       const provider = new LocalSecretsProvider('.secrets.local.json');
-      await expect(provider.delete('NONEXISTENT')).rejects.toThrow(
-        'Secret "NONEXISTENT" not found in .secrets.user.json',
-      );
+
+      await expect(
+        provider.read('REDIS_PASSWORD', 'auth-service'),
+      ).resolves.toBeNull();
+      await expect(provider.read('NONEXISTENT', 'shared')).resolves.toBeNull();
+      await expect(provider.read('KEY', 'unknown-service')).resolves.toBeNull();
     });
-  });
 
-  describe('clearCache', () => {
-    it('should clear all cached secrets', async () => {
+    it('should not return non-string entries of a section', async () => {
       const provider = new LocalSecretsProvider('.secrets.local.json');
-      provider.setServiceName('auth-service');
 
-      await provider.get('DATABASE_URL');
-      provider.clearCache();
+      await expect(
+        provider.read('secrets', 'auth-service'),
+      ).resolves.toBeNull();
+    });
 
-      // After clearing, should read from file again
-      const readCountBefore = (fs.readFileSync as ReturnType<typeof rs.fn>).mock
-        .calls.length;
-      await provider.get('DATABASE_URL');
-      expect(
-        (fs.readFileSync as ReturnType<typeof rs.fn>).mock.calls.length,
-      ).toBeGreaterThan(readCountBefore);
+    it('should read the file again on every read', async () => {
+      const provider = new LocalSecretsProvider('.secrets.local.json');
+      const readFile = fs.readFileSync as ReturnType<typeof rs.fn>;
+
+      await provider.read('DATABASE_URL', 'auth-service');
+      readFile.mockReturnValue(
+        JSON.stringify({
+          ...mockSecrets,
+          'auth-service': { DATABASE_URL: 'postgresql://changed' },
+        }),
+      );
+
+      await expect(provider.read('DATABASE_URL', 'auth-service')).resolves.toBe(
+        'postgresql://changed',
+      );
     });
   });
 
