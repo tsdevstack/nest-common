@@ -8,12 +8,13 @@ rs.mock('@nestjs/common', () => ({
   },
 }));
 
+import { injectTraceContext } from '@tsdevstack/telemetry';
 import { BaseServiceClient } from './base-service-client';
 import type { ServiceClientConfig } from './base-service-client';
 
 // Concrete subclass for testing
-class TestServiceClient extends BaseServiceClient<{ api: string }> {
-  public doInitialize(config: ServiceClientConfig<{ api: string }>): void {
+class TestServiceClient extends BaseServiceClient<object> {
+  public doInitialize(config: ServiceClientConfig<object>): void {
     this.initialize(config);
   }
 }
@@ -41,6 +42,19 @@ describe('BaseServiceClient', () => {
         'test-key',
       );
       expect(client.client).toEqual({ api: 'test' });
+    });
+
+    it("should make every call of a generated client carry the caller's trace", () => {
+      const use = rs.fn();
+      const generated = { instance: { interceptors: { request: { use } } } };
+
+      client.doInitialize({
+        baseURL: 'http://localhost:3000',
+        apiKey: 'test-key',
+        createClient: () => generated,
+      });
+
+      expect(use).toHaveBeenCalledWith(injectTraceContext);
     });
 
     it('should throw if baseURL is missing', () => {

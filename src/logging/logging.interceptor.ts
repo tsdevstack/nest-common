@@ -7,6 +7,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import type { Request, Response } from 'express';
+import { trace } from '@opentelemetry/api';
 import { LoggerService } from './logger.service';
 import { isQuietRequestPath } from './is-quiet-request-path';
 import { getErrorStatus } from './get-error-status';
@@ -91,6 +92,10 @@ export class LoggingInterceptor implements NestInterceptor {
             this.logger.warn(message, { ...fields, reason });
           } else if (fields.http.statusCode >= 500) {
             this.logger.error(message, error, fields);
+            // The request's span (tracing middleware) shows what failed
+            trace
+              .getActiveSpan()
+              ?.recordException(error instanceof Error ? error : String(error));
           } else {
             // Client errors (validation, auth, unknown id) are expected
             // answers: no stack trace, below error level

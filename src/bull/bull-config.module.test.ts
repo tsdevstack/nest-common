@@ -22,6 +22,7 @@ rs.mock('../secrets/secrets.service', () => ({
   SecretsService: class {},
 }));
 
+import { BullMqJobTracer } from './bullmq-job-tracer';
 import { BullConfigModule } from './bull-config.module';
 
 describe('BullConfigModule', () => {
@@ -75,6 +76,18 @@ describe('BullConfigModule', () => {
         const result = await config.useFactory(mockSecrets);
 
         expect(result.prefix).toBe('{bull}');
+      });
+
+      it('should give queues and workers OpenTelemetry tracing', async () => {
+        BullConfigModule.forRoot();
+
+        const config = mockForRootAsync.mock.calls[0][0];
+        const result = await config.useFactory({
+          get: rs.fn().mockResolvedValue('val'),
+        });
+
+        expect(result.telemetry.tracer).toBeInstanceOf(BullMqJobTracer);
+        expect(result.telemetry.contextManager).toBeDefined();
       });
 
       it('should enable TLS when REDIS_TLS is true', async () => {

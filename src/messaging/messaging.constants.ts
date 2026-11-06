@@ -25,6 +25,13 @@ export const DEFAULT_READ_COUNT = 10;
 /** Interval between XPENDING + XCLAIM checks (ms) */
 export const DEFAULT_CLAIM_CHECK_INTERVAL_MS = 30_000;
 
+/**
+ * Interval between "still working on it" signals for the messages a consumer
+ * holds (ms). Well below DEFAULT_CLAIM_MIN_IDLE_MS, so a message whose
+ * handler still runs never looks stuck to another instance.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000;
+
 /** Interval between idle-consumer reap sweeps (ms) */
 export const DEFAULT_REAP_INTERVAL_MS = 300_000;
 

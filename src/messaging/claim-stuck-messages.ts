@@ -3,6 +3,12 @@
  *
  * Checks for and reclaims stuck messages via XPENDING + XCLAIM.
  * Messages exceeding maxRetries are moved to the DLQ stream.
+ *
+ * A message is stuck when no consumer touched it for claimMinIdleMs: its
+ * consumer crashed, or failed and left it pending. A consumer that is still
+ * handling a message keeps it claimed (keepMessagesClaimed), so it is never
+ * taken here. A claimed message goes into `held` while its handler runs, so
+ * this consumer keeps it claimed too.
  */
 
 import type { Logger } from '@nestjs/common';
@@ -10,6 +16,7 @@ import type Redis from 'ioredis';
 import type { IncomingMessage } from './messaging.interface';
 import { DEFAULT_READ_COUNT, DEFAULT_MAX_LEN } from './messaging.constants';
 import { parseStreamEntry } from './parse-stream-entry';
+import { runMessageHandler } from './run-message-handler';
 
 export async function claimStuckMessages(
   redis: Redis,
@@ -23,6 +30,7 @@ export async function claimStuckMessages(
   claimMinIdleMs: number,
   maxRetries: number,
   dlqMaxLen: number = DEFAULT_MAX_LEN,
+  held: Set<string> = new Set(),
 ): Promise<void> {
   try {
     // Get pending messages for this group
@@ -97,6 +105,7 @@ export async function claimStuckMessages(
 
           if (claimed.length > 0) {
             const [claimedId, fields] = claimed[0] as [string, string[]];
+            held.add(claimedId);
             try {
               const message = parseStreamEntry(
                 claimedId,
@@ -104,13 +113,15 @@ export async function claimStuckMessages(
                 topic,
                 deliveryCount,
               );
-              await handler(message);
+              await runMessageHandler(handler, message, fields);
               await redis.xack(streamKey, groupName, claimedId);
             } catch {
               // Still failing — leave pending for next claim cycle
               logger.warn(
                 `Retry ${deliveryCount} failed for message ${claimedId} on topic "${topic}"`,
               );
+            } finally {
+              held.delete(claimedId);
             }
           }
         } catch (claimError) {

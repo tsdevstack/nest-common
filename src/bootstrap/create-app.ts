@@ -11,6 +11,7 @@ import {
 } from '../open-api-docs/create-swagger-document';
 import { LoggerService } from '../logging/logger.service';
 import { NestLoggerAdapter } from '../logging/nest-logger-adapter';
+import { createTracingMiddleware } from '../telemetry/create-tracing-middleware';
 
 export interface AppBootstrapOptions {
   port: number | string;
@@ -51,6 +52,10 @@ export async function createApp<T>(
     type: VersioningType.URI,
     prefix: 'v',
   });
+
+  // First: the request's span wraps everything after it, so all of the
+  // request's log lines carry its trace
+  app.use(createTracingMiddleware());
 
   // Security middleware
   app.use(

@@ -17,11 +17,15 @@ import {
   DEFAULT_CLAIM_CHECK_INTERVAL_MS,
   DEFAULT_REAP_INTERVAL_MS,
   DEFAULT_REAP_IDLE_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
 } from './messaging.constants';
 import { parseStreamEntry } from './parse-stream-entry';
+import { runMessageHandler } from './run-message-handler';
 import { claimStuckMessages } from './claim-stuck-messages';
 import { reapIdleConsumers } from './reap-idle-consumers';
 import { ensureConsumerGroup } from './ensure-consumer-group';
+import { keepMessagesClaimed } from './keep-messages-claimed';
+import { trimReadMessages } from './trim-read-messages';
 
 export interface ConsumerLoopOptions {
   /** The ioredis client (dedicated connection with maxRetriesPerRequest: null) */
@@ -73,6 +77,35 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
   let lastClaimCheck = Date.now();
   let lastReapCheck = Date.now();
 
+  // Messages this consumer holds: read or claimed, handler not finished.
+  // While it holds any, it tells Redis "still working on them" so another
+  // instance doesn't take them over and run them a second time.
+  const held = new Set<string>();
+  let heartbeatRunning = false;
+  const heartbeat = setInterval(
+    () => {
+      if (held.size === 0 || heartbeatRunning) return;
+      heartbeatRunning = true;
+      keepMessagesClaimed(redis, streamKey, groupName, consumerName, [...held])
+        .catch((error: unknown) => {
+          logger.warn(
+            `Failed to keep messages claimed on topic "${topic}": ${
+              error instanceof Error ? error.message : 'Unknown error'
+            }`,
+          );
+        })
+        .finally(() => {
+          heartbeatRunning = false;
+        });
+    },
+    // A third of the idle threshold at most, so two signals can be late
+    Math.max(
+      1_000,
+      Math.min(DEFAULT_HEARTBEAT_INTERVAL_MS, Math.floor(claimMinIdleMs / 3)),
+    ),
+  );
+  heartbeat.unref();
+
   const loop = async (): Promise<void> => {
     while (running) {
       try {
@@ -95,10 +128,11 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
             [string, Array<[string, string[]]>]
           >;
           for (const [, entries] of typedResults) {
+            for (const [entryId] of entries) held.add(entryId);
             for (const [entryId, fields] of entries) {
               try {
                 const message = parseStreamEntry(entryId, fields, topic, 0);
-                await handler(message);
+                await runMessageHandler(handler, message, fields);
                 // Success → XACK
                 await redis.xack(streamKey, groupName, entryId);
               } catch (handlerError) {
@@ -110,6 +144,8 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
                       : 'Unknown error'
                   }`,
                 );
+              } finally {
+                held.delete(entryId);
               }
             }
           }
@@ -119,7 +155,7 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
-        // Step 2: Periodically check for stuck messages
+        // Step 2: Periodically check for stuck messages and delete read ones
         if (Date.now() - lastClaimCheck >= DEFAULT_CLAIM_CHECK_INTERVAL_MS) {
           lastClaimCheck = Date.now();
           await claimStuckMessages(
@@ -134,7 +170,10 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
             claimMinIdleMs,
             maxRetries,
             maxLen,
+            held,
           );
+          // Delete what every subscriber group finished
+          await trimReadMessages(redis, streamKey, logger);
         }
 
         // Step 3: Periodically remove consumers left behind by dead replicas
@@ -179,6 +218,8 @@ export function startConsumerLoop(options: ConsumerLoopOptions): {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
+
+    clearInterval(heartbeat);
 
     // Signal that loop has stopped
     if (resolveStop) resolveStop();

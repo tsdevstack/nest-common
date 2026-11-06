@@ -198,4 +198,56 @@ describe('claimStuckMessages', () => {
       expect.stringContaining('Retry 1 failed'),
     );
   });
+
+  it('should hold a reclaimed message while its handler runs', async () => {
+    mockRedis.xpending.mockResolvedValue([['1-0', 'consumer-1', 120000, 1]]);
+    mockRedis.xclaim.mockResolvedValue([['1-0', ['data', '{"retry":"msg"}']]]);
+    const held = new Set<string>();
+    let heldDuringHandler: string[] = [];
+    mockHandler.mockImplementation(async () => {
+      heldDuringHandler = [...held];
+    });
+
+    await claimStuckMessages(
+      mockRedis as never,
+      'stream-key',
+      'group-name',
+      'consumer-1',
+      'topic',
+      'stream-key:dlq',
+      mockHandler,
+      mockLogger as never,
+      60000,
+      3,
+      10_000,
+      held,
+    );
+
+    expect(heldDuringHandler).toEqual(['1-0']);
+    expect(held.size).toBe(0);
+  });
+
+  it('should release a reclaimed message when its handler fails', async () => {
+    mockRedis.xpending.mockResolvedValue([['1-0', 'consumer-1', 120000, 1]]);
+    mockRedis.xclaim.mockResolvedValue([['1-0', ['data', '{"retry":"msg"}']]]);
+    mockHandler.mockRejectedValueOnce(new Error('Still failing'));
+    const held = new Set<string>();
+
+    await claimStuckMessages(
+      mockRedis as never,
+      'stream-key',
+      'group-name',
+      'consumer-1',
+      'topic',
+      'stream-key:dlq',
+      mockHandler,
+      mockLogger as never,
+      60000,
+      3,
+      10_000,
+      held,
+    );
+
+    expect(held.size).toBe(0);
+  });
 });

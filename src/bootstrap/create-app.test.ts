@@ -47,6 +47,14 @@ rs.mock('../open-api-docs/create-swagger-document', () => ({
   createSwaggerDocument: mockCreateSwaggerDocument,
 }));
 
+const { tracingMiddleware } = rs.hoisted(() => ({
+  tracingMiddleware: (): void => undefined,
+}));
+
+rs.mock('../telemetry/create-tracing-middleware', () => ({
+  createTracingMiddleware: () => tracingMiddleware,
+}));
+
 import { createApp } from './create-app';
 import { NestLoggerAdapter } from '../logging/nest-logger-adapter';
 
@@ -83,6 +91,16 @@ describe('createApp', () => {
     expect(mockCreate).toHaveBeenCalledWith(expect.anything(), {
       logger: expect.any(NestLoggerAdapter),
     });
+  });
+
+  it('should put the tracing middleware before all others', async () => {
+    await createApp(class {}, {
+      port: 3000,
+      globalPrefix: 'api',
+      swagger: { title: 'Test', description: 'Test' },
+    });
+
+    expect(mockApp.use.mock.calls[0][0]).toBe(tracingMiddleware);
   });
 
   it('should set global prefix with excluded routes', async () => {

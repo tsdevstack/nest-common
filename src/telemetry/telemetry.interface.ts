@@ -1,7 +1,7 @@
 export interface TelemetryModuleOptions {
   /**
    * Service name for identification in telemetry
-   * Default: SERVICE_NAME env var
+   * Default: WORKER_NAME, then SERVICE_NAME env var
    */
   serviceName?: string;
 
@@ -25,7 +25,8 @@ export interface TelemetryModuleOptions {
 
   /**
    * OTLP base endpoint (Jaeger, OTEL Collector, etc.)
-   * The /v1/traces path is appended automatically.
+   * The /v1/traces path is appended automatically. Used locally; in the
+   * cloud traces go to Cloud Trace, X-Ray or Azure Monitor.
    * Default: OTEL_EXPORTER_OTLP_ENDPOINT env var or 'http://localhost:4318'
    */
   tracingEndpoint?: string;

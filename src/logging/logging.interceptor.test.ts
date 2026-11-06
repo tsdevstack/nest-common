@@ -6,6 +6,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { of, throwError, lastValueFrom, catchError } from 'rxjs';
+import { trace, type Span } from '@opentelemetry/api';
 
 import { LoggingInterceptor } from './logging.interceptor';
 import type { LoggerService } from './logger.service';
@@ -215,6 +216,33 @@ describe('LoggingInterceptor', () => {
         }),
       );
       expect(mockChildLogger.info).not.toHaveBeenCalled();
+    });
+
+    it("should record a server error on the request's span, not a client error", async () => {
+      const recordException = rs.fn();
+      const spy = rs
+        .spyOn(trace, 'getActiveSpan')
+        .mockReturnValue({ recordException } as unknown as Span);
+      const error = new Error('Test error');
+
+      mockCallHandler.handle = rs.fn().mockReturnValue(throwError(() => error));
+      await lastValueFrom(
+        interceptor
+          .intercept(mockExecutionContext, mockCallHandler)
+          .pipe(catchError(() => of(null))),
+      );
+      mockCallHandler.handle = rs
+        .fn()
+        .mockReturnValue(throwError(() => new NotFoundException()));
+      await lastValueFrom(
+        interceptor
+          .intercept(mockExecutionContext, mockCallHandler)
+          .pipe(catchError(() => of(null))),
+      );
+
+      expect(recordException).toHaveBeenCalledTimes(1);
+      expect(recordException).toHaveBeenCalledWith(error);
+      spy.mockRestore();
     });
 
     it('should log a server error from an HttpException at error level with its status', async () => {

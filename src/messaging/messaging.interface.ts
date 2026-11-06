@@ -7,7 +7,12 @@ export interface MessagingModuleOptions {
   maxRetries?: number;
   /** XREADGROUP block time in milliseconds (default: 5000) */
   blockTimeMs?: number;
-  /** Stream MAXLEN approximate trim, applied on publish and to the DLQ (default: 10000) */
+  /**
+   * Approximate entry cap (MAXLEN ~) for a topic's stream while the topic has
+   * no subscriber yet, and for the DLQ (default: 10000). A topic with a
+   * subscriber has no cap: its subscribers delete the entries every
+   * subscriber finished.
+   */
   maxLen?: number;
   /** Reclaim stuck messages after this idle time in ms (default: 60000) */
   claimMinIdleMs?: number;

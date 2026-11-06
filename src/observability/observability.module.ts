@@ -3,10 +3,10 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
 import { LoggerModule } from '../logging/logger.module';
 import { LoggingInterceptor } from '../logging/logging.interceptor';
 import { TelemetryModule } from '../telemetry/telemetry.module';
-import { TracingInterceptor } from '../telemetry/tracing.interceptor';
 import { MetricsModule } from '../metrics/metrics.module';
 import { MetricsInterceptor } from '../metrics/metrics.interceptor';
 import { HealthModule } from '../health/health.module';
+import { ObservabilityRootModule } from './observability-root.module';
 import type { ObservabilityModuleOptions } from './observability.interface';
 
 /**
@@ -40,10 +40,6 @@ import type { ObservabilityModuleOptions } from './observability.interface';
       provide: APP_INTERCEPTOR,
       useClass: MetricsInterceptor,
     },
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: TracingInterceptor,
-    },
   ],
   exports: [LoggerModule, TelemetryModule, MetricsModule],
 })
@@ -71,7 +67,7 @@ export class ObservabilityModule {
           metrics: options.metrics,
           tracing: options.tracing,
           tracingEndpoint: options.tracingEndpoint,
-        })
+        }),
       );
       exports.push(TelemetryModule);
     }
@@ -85,20 +81,14 @@ export class ObservabilityModule {
       });
     }
 
-    if (options.tracing !== false) {
-      providers.push({
-        provide: APP_INTERCEPTOR,
-        useClass: TracingInterceptor,
-      });
-    }
-
     // Health (default: enabled)
     if (options.health !== false) {
       imports.push(HealthModule);
     }
 
+    // Not ObservabilityModule: its @Module() defaults would be added too
     return {
-      module: ObservabilityModule,
+      module: ObservabilityRootModule,
       global: true,
       imports,
       providers,

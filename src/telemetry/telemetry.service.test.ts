@@ -3,25 +3,20 @@ import { describe, it, expect, rs, beforeEach, afterEach } from '@rstest/core';
 // Use rs.hoisted() to define ALL mocks that are used in rs.mock() factories
 const {
   mockMeterProvider,
-  mockTracerProvider,
-  mockApi,
+  mockTracingHandle,
+  mockRegisterTelemetry,
+  mockRegisterPrismaTracing,
   mockMeter,
   mockTracer,
   MockPrometheusExporter,
   MockMeterProvider,
-  MockTracerProvider,
 } = rs.hoisted(() => {
   const meterProvider = {
     shutdown: rs.fn().mockResolvedValue(undefined),
   };
-  const tracerProvider = {
+  const tracingHandle = {
+    forceFlush: rs.fn().mockResolvedValue(undefined),
     shutdown: rs.fn().mockResolvedValue(undefined),
-  };
-  // Global registrations the service performs on @opentelemetry/api
-  const api = {
-    setGlobalTracerProvider: rs.fn(),
-    setGlobalContextManager: rs.fn(),
-    setGlobalPropagator: rs.fn(),
   };
   const prometheusExporterInstance = {};
   const meter = {
@@ -43,19 +38,15 @@ const {
     shutdown = meterProvider.shutdown;
   }
 
-  class TracerProviderMock {
-    shutdown = tracerProvider.shutdown;
-  }
-
   return {
     mockMeterProvider: meterProvider,
-    mockTracerProvider: tracerProvider,
-    mockApi: api,
+    mockTracingHandle: tracingHandle,
+    mockRegisterTelemetry: rs.fn().mockReturnValue(tracingHandle),
+    mockRegisterPrismaTracing: rs.fn(),
     mockMeter: meter,
     mockTracer: tracer,
     MockPrometheusExporter: PrometheusExporterMock,
     MockMeterProvider: MeterProviderMock,
-    MockTracerProvider: TracerProviderMock,
   };
 });
 
@@ -67,27 +58,12 @@ rs.mock('@opentelemetry/sdk-metrics', () => ({
   MeterProvider: MockMeterProvider,
 }));
 
-rs.mock('@opentelemetry/sdk-trace', () => ({
-  TracerProvider: MockTracerProvider,
-  BatchSpanProcessor: class {},
+rs.mock('@tsdevstack/telemetry', () => ({
+  registerTelemetry: mockRegisterTelemetry,
 }));
 
-rs.mock('@opentelemetry/context-async-hooks', () => ({
-  AsyncLocalStorageContextManager: class {
-    enable(): this {
-      return this;
-    }
-  },
-}));
-
-rs.mock('@opentelemetry/core', () => ({
-  CompositePropagator: class {},
-  W3CTraceContextPropagator: class {},
-  W3CBaggagePropagator: class {},
-}));
-
-rs.mock('@opentelemetry/exporter-trace-otlp-http', () => ({
-  OTLPTraceExporter: class {},
+rs.mock('./register-prisma-tracing', () => ({
+  registerPrismaTracing: mockRegisterPrismaTracing,
 }));
 
 rs.mock('@opentelemetry/resources', () => ({
@@ -106,13 +82,6 @@ rs.mock('@opentelemetry/api', () => ({
   },
   trace: {
     getTracer: rs.fn().mockReturnValue(mockTracer),
-    setGlobalTracerProvider: mockApi.setGlobalTracerProvider,
-  },
-  context: {
-    setGlobalContextManager: mockApi.setGlobalContextManager,
-  },
-  propagation: {
-    setGlobalPropagator: mockApi.setGlobalPropagator,
   },
 }));
 
@@ -133,17 +102,27 @@ describe('TelemetryService', () => {
 
   describe('constructor', () => {
     it('should use options.serviceName when provided', () => {
+      delete process.env.WORKER_NAME;
       service = new TelemetryService({ serviceName: 'test-service' });
       expect(service.getServiceName()).toBe('test-service');
     });
 
     it('should fall back to SERVICE_NAME env var', () => {
+      delete process.env.WORKER_NAME;
       process.env.SERVICE_NAME = 'env-service';
       service = new TelemetryService({});
       expect(service.getServiceName()).toBe('env-service');
     });
 
+    it("should name a worker's telemetry after the worker, over the module's name", () => {
+      process.env.WORKER_NAME = 'auth-worker';
+      process.env.SERVICE_NAME = 'auth-service';
+      service = new TelemetryService({ serviceName: 'auth-service' });
+      expect(service.getServiceName()).toBe('auth-worker');
+    });
+
     it('should default to unknown-service when no name provided', () => {
+      delete process.env.WORKER_NAME;
       delete process.env.SERVICE_NAME;
       service = new TelemetryService({});
       expect(service.getServiceName()).toBe('unknown-service');
@@ -174,19 +153,15 @@ describe('TelemetryService', () => {
       expect(service.isTracingEnabled()).toBe(false);
     });
 
-    it('should use custom tracing endpoint when provided', () => {
+    it('should pass a custom tracing endpoint on', () => {
       service = new TelemetryService({
         tracingEndpoint: 'http://custom:4318',
+        metrics: false,
       });
-      // Endpoint is stored internally - we verify by checking the service initializes without error
-      expect(service.isTracingEnabled()).toBe(true);
-    });
-
-    it('should use OTEL_EXPORTER_OTLP_ENDPOINT env var for tracing endpoint', () => {
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'http://env-endpoint:4318';
-      service = new TelemetryService({});
-      // Endpoint is used during initialization
-      expect(service.isTracingEnabled()).toBe(true);
+      service.onModuleInit();
+      expect(mockRegisterTelemetry).toHaveBeenCalledWith(
+        expect.objectContaining({ endpoint: 'http://custom:4318' }),
+      );
     });
   });
 
@@ -198,14 +173,29 @@ describe('TelemetryService', () => {
       expect(service.getPrometheusExporter()).not.toBeNull();
     });
 
-    it('should initialize tracing when enabled', () => {
-      service = new TelemetryService({ metrics: false, tracing: true });
+    it("should register tracing for the service's cloud", () => {
+      process.env.SECRETS_PROVIDER = 'gcp';
+      service = new TelemetryService({
+        serviceName: 'auth-service',
+        serviceVersion: '2.0.0',
+        metrics: false,
+        tracing: true,
+      });
       service.onModuleInit();
-      expect(mockApi.setGlobalTracerProvider).toHaveBeenCalledWith(
-        expect.any(MockTracerProvider),
-      );
-      expect(mockApi.setGlobalContextManager).toHaveBeenCalled();
-      expect(mockApi.setGlobalPropagator).toHaveBeenCalled();
+      expect(mockRegisterTelemetry).toHaveBeenCalledWith({
+        serviceName: 'auth-service',
+        serviceVersion: '2.0.0',
+        provider: 'gcp',
+        endpoint: undefined,
+        onExportError: expect.any(Function),
+      });
+    });
+
+    it("should trace the service's Prisma queries", () => {
+      service = new TelemetryService({ metrics: false });
+      rs.clearAllMocks();
+      service.onModuleInit();
+      expect(mockRegisterPrismaTracing).toHaveBeenCalledTimes(1);
     });
 
     it('should initialize both metrics and tracing by default', () => {
@@ -213,7 +203,7 @@ describe('TelemetryService', () => {
       service.onModuleInit();
       // Verify prometheus exporter was initialized
       expect(service.getPrometheusExporter()).not.toBeNull();
-      expect(mockApi.setGlobalTracerProvider).toHaveBeenCalled();
+      expect(mockRegisterTelemetry).toHaveBeenCalled();
     });
 
     it('should not initialize metrics when disabled', () => {
@@ -227,16 +217,24 @@ describe('TelemetryService', () => {
       service = new TelemetryService({ metrics: false, tracing: false });
       rs.clearAllMocks();
       service.onModuleInit();
-      expect(mockApi.setGlobalTracerProvider).not.toHaveBeenCalled();
+      expect(mockRegisterTelemetry).not.toHaveBeenCalled();
+      expect(mockRegisterPrismaTracing).not.toHaveBeenCalled();
     });
   });
 
   describe('onModuleDestroy', () => {
-    it('should shutdown tracer provider when tracing enabled', async () => {
+    it('should shut tracing down when tracing enabled', async () => {
       service = new TelemetryService({ tracing: true, metrics: false });
       service.onModuleInit();
       await service.onModuleDestroy();
-      expect(mockTracerProvider.shutdown).toHaveBeenCalled();
+      expect(mockTracingHandle.shutdown).toHaveBeenCalled();
+    });
+
+    it('should not fail the shutdown when the last export fails', async () => {
+      mockTracingHandle.shutdown.mockRejectedValueOnce(new Error('no creds'));
+      service = new TelemetryService({ tracing: true, metrics: false });
+      service.onModuleInit();
+      await expect(service.onModuleDestroy()).resolves.toBeUndefined();
     });
 
     it('should shutdown meter provider when metrics enabled', async () => {

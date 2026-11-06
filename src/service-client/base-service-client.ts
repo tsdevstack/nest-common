@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { injectTraceContext } from '@tsdevstack/telemetry';
+import { hasAxiosInstance } from './has-axios-instance';
 
 /**
  * Configuration for initializing a service client.
@@ -35,6 +37,7 @@ export interface ServiceClientConfig<TApi> {
  * - Automatic initialization during module init
  * - API key injection for service-to-service authentication
  * - Support for JWT forwarding via securityWorker (user context)
+ * - Trace propagation: every call continues the caller's trace (traceparent)
  * - Standardized error handling and logging
  * - Type-safe client access
  *
@@ -130,6 +133,10 @@ export abstract class BaseServiceClient<TApi> {
       }
 
       this.client = config.createClient(config.baseURL, config.apiKey);
+      // The called service continues this request's trace
+      if (hasAxiosInstance(this.client)) {
+        this.client.instance.interceptors.request.use(injectTraceContext);
+      }
       this.logger.log(`Service client initialized: ${config.baseURL}`);
     } catch (error) {
       this.logger.error(

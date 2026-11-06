@@ -5,6 +5,7 @@ describe('startConsumerLoop', () => {
   let mockRedis: Record<string, ReturnType<typeof rs.fn>>;
   let mockLogger: Record<string, ReturnType<typeof rs.fn>>;
   let mockHandler: ReturnType<typeof rs.fn>;
+  let pipeline: Record<string, ReturnType<typeof rs.fn>>;
 
   beforeEach(() => {
     mockRedis = {
@@ -15,6 +16,15 @@ describe('startConsumerLoop', () => {
       xclaim: rs.fn().mockResolvedValue([]),
       xadd: rs.fn().mockResolvedValue('1-0'),
     };
+    pipeline = {
+      xpending: rs.fn(),
+      exec: rs.fn().mockResolvedValue([
+        [null, [['1-0', 'service:1234', 1_000, 1]]],
+        [null, [['2-0', 'service:1234', 1_000, 1]]],
+      ]),
+    };
+    pipeline.xpending.mockReturnValue(pipeline);
+    mockRedis.pipeline = rs.fn().mockReturnValue(pipeline);
     mockLogger = {
       log: rs.fn(),
       warn: rs.fn(),
@@ -174,5 +184,92 @@ describe('startConsumerLoop', () => {
     );
     expect(mockLogger.error).not.toHaveBeenCalled();
     expect(mockRedis.xreadgroup.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  describe('While handlers run', () => {
+    const start = (): { stop: () => Promise<void> } =>
+      startConsumerLoop({
+        redis: mockRedis as never,
+        streamKey: 'test:messaging:topic',
+        groupName: 'test:messaging:topic:service',
+        consumerName: 'service:1234',
+        topic: 'topic',
+        dlqStreamKey: 'test:messaging:topic:dlq',
+        handler: mockHandler,
+        logger: mockLogger as never,
+        blockTimeMs: 10,
+        // Heartbeat every second (a third of this, at least 1 s)
+        claimMinIdleMs: 3_000,
+      });
+
+    it('should keep the running message and the rest of its batch claimed', async () => {
+      mockRedis.xreadgroup
+        .mockResolvedValueOnce([
+          [
+            'test:messaging:topic',
+            [
+              ['1-0', ['data', '{"n":1}']],
+              ['2-0', ['data', '{"n":2}']],
+            ],
+          ],
+        ])
+        .mockResolvedValue(null);
+      mockHandler.mockImplementationOnce(
+        () => new Promise((resolve) => setTimeout(resolve, 1_300)),
+      );
+
+      const { stop } = start();
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      await stop();
+
+      expect(pipeline.xpending).toHaveBeenCalledWith(
+        'test:messaging:topic',
+        'test:messaging:topic:service',
+        '2-0',
+        '2-0',
+        1,
+        'service:1234',
+      );
+      expect(mockRedis.xclaim).toHaveBeenCalledWith(
+        'test:messaging:topic',
+        'test:messaging:topic:service',
+        'service:1234',
+        0,
+        '1-0',
+        '2-0',
+        'JUSTID',
+      );
+    });
+
+    it('should not signal anything once its handlers finished', async () => {
+      mockRedis.xreadgroup
+        .mockResolvedValueOnce([
+          ['test:messaging:topic', [['1-0', ['data', '{"n":1}']]]],
+        ])
+        .mockResolvedValue(null);
+
+      const { stop } = start();
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await stop();
+
+      expect(mockRedis.xack).toHaveBeenCalled();
+      expect(mockRedis.pipeline).not.toHaveBeenCalled();
+      expect(mockRedis.xclaim).not.toHaveBeenCalled();
+    });
+
+    it('should keep a failed message no longer claimed (the stuck-message check retries it)', async () => {
+      mockHandler.mockRejectedValueOnce(new Error('Handler failed'));
+      mockRedis.xreadgroup
+        .mockResolvedValueOnce([
+          ['test:messaging:topic', [['1-0', ['data', '{"n":1}']]]],
+        ])
+        .mockResolvedValue(null);
+
+      const { stop } = start();
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await stop();
+
+      expect(mockRedis.pipeline).not.toHaveBeenCalled();
+    });
   });
 });

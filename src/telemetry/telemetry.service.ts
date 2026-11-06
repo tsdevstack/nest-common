@@ -14,64 +14,63 @@ import {
 } from '@opentelemetry/semantic-conventions';
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
 import { MeterProvider } from '@opentelemetry/sdk-metrics';
-import {
-  context,
-  metrics,
-  propagation,
-  trace,
-  type Meter,
-  type Tracer,
-} from '@opentelemetry/api';
-import { TracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace';
-import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
-import {
-  CompositePropagator,
-  W3CBaggagePropagator,
-  W3CTraceContextPropagator,
-} from '@opentelemetry/core';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { metrics, trace, type Meter, type Tracer } from '@opentelemetry/api';
+import { registerTelemetry, type TelemetryHandle } from '@tsdevstack/telemetry';
+import { LoggerService } from '../logging/logger.service';
 import type { TelemetryModuleOptions } from './telemetry.interface';
-
-const DEFAULT_OTLP_ENDPOINT = 'http://localhost:4318';
+import { registerPrismaTracing } from './register-prisma-tracing';
 
 @Injectable()
 export class TelemetryService implements OnModuleInit, OnModuleDestroy {
   private meterProvider: MeterProvider | null = null;
   private prometheusExporter: PrometheusExporter | null = null;
-  private tracerProvider: TracerProvider | null = null;
+  private tracing: TelemetryHandle | null = null;
   private readonly serviceName: string;
   private readonly serviceVersion: string;
   private readonly metricsEnabled: boolean;
   private readonly tracingEnabled: boolean;
-  private readonly tracingEndpoint: string;
+  private readonly tracingEndpoint?: string;
 
   constructor(
     @Inject('TELEMETRY_MODULE_OPTIONS')
     options: TelemetryModuleOptions,
   ) {
+    // A worker's spans carry its own name (auth-worker), like its logs,
+    // even when its module passes the base service's name
     this.serviceName =
-      options.serviceName || process.env.SERVICE_NAME || 'unknown-service';
+      process.env.WORKER_NAME ||
+      options.serviceName ||
+      process.env.SERVICE_NAME ||
+      'unknown-service';
     this.serviceVersion = options.serviceVersion || '1.0.0';
     this.metricsEnabled = options.metrics !== false;
     this.tracingEnabled = options.tracing !== false;
-    this.tracingEndpoint =
-      options.tracingEndpoint ||
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
-      DEFAULT_OTLP_ENDPOINT;
+    this.tracingEndpoint = options.tracingEndpoint;
   }
 
   onModuleInit(): void {
-    const resource = resourceFromAttributes({
-      [ATTR_SERVICE_NAME]: this.serviceName,
-      [ATTR_SERVICE_VERSION]: this.serviceVersion,
-    });
-
     if (this.metricsEnabled) {
-      this.initializeMetrics(resource);
+      this.initializeMetrics(
+        resourceFromAttributes({
+          [ATTR_SERVICE_NAME]: this.serviceName,
+          [ATTR_SERVICE_VERSION]: this.serviceVersion,
+        }),
+      );
     }
 
     if (this.tracingEnabled) {
-      this.initializeTracing(resource);
+      // Traces go to the cloud's own service (SECRETS_PROVIDER: gcp, aws,
+      // azure); locally to Jaeger
+      const logger = new LoggerService();
+      logger.setContext('Telemetry');
+      this.tracing = registerTelemetry({
+        serviceName: this.serviceName,
+        serviceVersion: this.serviceVersion,
+        provider: process.env.SECRETS_PROVIDER,
+        endpoint: this.tracingEndpoint,
+        onExportError: (message) => logger.warn(message),
+      });
+      registerPrismaTracing();
     }
   }
 
@@ -92,39 +91,13 @@ export class TelemetryService implements OnModuleInit, OnModuleDestroy {
     metrics.setGlobalMeterProvider(this.meterProvider);
   }
 
-  private initializeTracing(resource: Resource): void {
-    // Create OTLP exporter for traces (Jaeger, OTEL Collector, etc.)
-    const otlpExporter = new OTLPTraceExporter({
-      url: `${this.tracingEndpoint}/v1/traces`,
-    });
-
-    // Create tracer provider with span processor
-    this.tracerProvider = new TracerProvider({
-      resource,
-      spanProcessors: [new BatchSpanProcessor({ exporter: otlpExporter })],
-    });
-
-    // Register the provider, the Node context manager and the W3C propagators
-    // (what NodeTracerProvider.register() did before SDK 3)
-    trace.setGlobalTracerProvider(this.tracerProvider);
-    context.setGlobalContextManager(
-      new AsyncLocalStorageContextManager().enable(),
-    );
-    propagation.setGlobalPropagator(
-      new CompositePropagator({
-        propagators: [
-          new W3CTraceContextPropagator(),
-          new W3CBaggagePropagator(),
-        ],
-      }),
-    );
-  }
-
   async onModuleDestroy(): Promise<void> {
     const shutdownPromises: Promise<void>[] = [];
 
-    if (this.tracerProvider) {
-      shutdownPromises.push(this.tracerProvider.shutdown());
+    if (this.tracing) {
+      // A failed last export was already reported (onExportError); it must
+      // not fail the shutdown
+      shutdownPromises.push(this.tracing.shutdown().catch(() => undefined));
     }
 
     if (this.meterProvider) {

@@ -27,12 +27,24 @@ export interface LoggerModuleOptions {
 }
 
 /**
- * Default paths to redact for common PII fields
- * These are applied unless disableDefaultRedaction is true
+ * Default paths to redact: common PII fields, credentials and the request
+ * headers that carry them. These are applied unless disableDefaultRedaction
+ * is true.
+ *
+ * Each name is matched at the top of the entry and one level down
+ * ({ password }, { user: { password } }), not deeper: pino checks every path
+ * on every line. Header names are lowercase, as Node gives request headers
+ * ({ headers: req.headers }).
  */
 export const DEFAULT_REDACT_PATHS = [
   'password',
   '*.password',
+  'newPassword',
+  '*.newPassword',
+  'currentPassword',
+  '*.currentPassword',
+  'passwordHash',
+  '*.passwordHash',
   'email',
   '*.email',
   'ssn',
@@ -41,8 +53,26 @@ export const DEFAULT_REDACT_PATHS = [
   '*.creditCard',
   'token',
   '*.token',
+  'accessToken',
+  '*.accessToken',
+  'refreshToken',
+  '*.refreshToken',
   'secret',
   '*.secret',
+  'privateKey',
+  '*.privateKey',
   'apiKey',
   '*.apiKey',
+  'authorization',
+  '*.authorization',
+  'cookie',
+  '*.cookie',
+  '["set-cookie"]',
+  '*["set-cookie"]',
+  '["x-api-key"]',
+  '*["x-api-key"]',
+  '["x-kong-trust"]',
+  '*["x-kong-trust"]',
+  '["x-tsdevstack-frontend-token"]',
+  '*["x-tsdevstack-frontend-token"]',
 ];

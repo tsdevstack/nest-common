@@ -8,6 +8,10 @@ import {
   type Mock,
 } from '@rstest/core';
 
+interface LoggerOptionsLike {
+  formatters: { level: (label: string) => Record<string, string> };
+}
+
 // Store mock references globally so they can be accessed in tests
 let mockLogger: {
   debug: Mock;
@@ -37,6 +41,8 @@ rs.mock('pino', () => {
 
 // Import after mock is set up
 import pino from 'pino';
+import { ROOT_CONTEXT, TraceFlags, context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { LoggerService } from './logger.service';
 
 describe('LoggerService', () => {
@@ -238,6 +244,123 @@ describe('LoggerService', () => {
         Record<string, unknown>,
       ];
       expect(options).not.toHaveProperty('transport');
+    });
+  });
+
+  describe('service name', () => {
+    const original = {
+      SERVICE_NAME: process.env.SERVICE_NAME,
+      WORKER_NAME: process.env.WORKER_NAME,
+    };
+
+    afterEach(() => {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    });
+
+    function baseService(): unknown {
+      const [options] = rs.mocked(pino).mock.calls[0] as unknown as [
+        { base: { service: unknown } },
+      ];
+      return options.base.service;
+    }
+
+    it('should name lines after the service', () => {
+      process.env.SERVICE_NAME = 'auth-service';
+      delete process.env.WORKER_NAME;
+      new LoggerService().info('hello');
+
+      expect(baseService()).toBe('auth-service');
+    });
+
+    it("should name a worker's lines after the worker", () => {
+      process.env.SERVICE_NAME = 'auth-service';
+      process.env.WORKER_NAME = 'auth-worker';
+      new LoggerService().info('hello');
+
+      expect(baseService()).toBe('auth-worker');
+    });
+  });
+  describe('trace fields', () => {
+    const span = {
+      traceId: '5759e988bd862e3fe1be46a994272793',
+      spanId: '53995c3f42cd8ad8',
+      traceFlags: TraceFlags.SAMPLED,
+    };
+    const saved = {
+      SECRETS_PROVIDER: process.env.SECRETS_PROVIDER,
+      GCP_PROJECT_ID: process.env.GCP_PROJECT_ID,
+    };
+
+    beforeEach(() => {
+      context.setGlobalContextManager(
+        new AsyncLocalStorageContextManager().enable(),
+      );
+    });
+
+    afterEach(() => {
+      context.disable();
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    });
+
+    it('should keep the correlation ID next to the trace', () => {
+      process.env.SECRETS_PROVIDER = 'local';
+      loggerService.setCorrelationId('req-1');
+
+      context.with(trace.setSpanContext(ROOT_CONTEXT, span), () =>
+        loggerService.info('in a request'),
+      );
+
+      expect(mockLogger.info).toHaveBeenCalledWith({
+        trace_id: span.traceId,
+        span_id: span.spanId,
+        correlationId: 'req-1',
+        msg: 'in a request',
+      });
+    });
+
+    it("should link the line to its trace in GCP's console", () => {
+      process.env.SECRETS_PROVIDER = 'gcp';
+      process.env.GCP_PROJECT_ID = 'shop-dev';
+
+      context.with(trace.setSpanContext(ROOT_CONTEXT, span), () =>
+        loggerService.warn('slow'),
+      );
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          'logging.googleapis.com/trace': `projects/shop-dev/traces/${span.traceId}`,
+          'logging.googleapis.com/spanId': span.spanId,
+          'logging.googleapis.com/trace_sampled': true,
+        }),
+      );
+    });
+
+    it('should give each line a Cloud Logging severity on GCP only', () => {
+      process.env.SECRETS_PROVIDER = 'gcp';
+      new LoggerService().info('on gcp');
+      process.env.SECRETS_PROVIDER = 'aws';
+      new LoggerService().info('on aws');
+
+      const [gcpOptions, awsOptions] = (
+        pino as unknown as { mock: { calls: [LoggerOptionsLike][] } }
+      ).mock.calls.map((call) => call[0]);
+      expect(gcpOptions.formatters.level('warn')).toEqual({
+        level: 'warn',
+        severity: 'WARNING',
+      });
+      expect(awsOptions.formatters.level('warn')).toEqual({ level: 'warn' });
     });
   });
 });

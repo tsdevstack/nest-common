@@ -5,6 +5,8 @@ import {
   DEFAULT_REDACT_PATHS,
   type LoggerModuleOptions,
 } from './logger.interface';
+import { buildTraceLogFields } from './build-trace-log-fields';
+import { toGcpSeverity } from './to-gcp-severity';
 
 export interface LogContext {
   [key: string]: unknown;
@@ -45,13 +47,22 @@ export class LoggerService {
     // Build redaction paths for PII protection
     const redactPaths = this.buildRedactPaths();
 
+    // On GCP the line's severity too: the console shows and filters by it
+    const onGcp = process.env.SECRETS_PROVIDER === 'gcp';
+
     const pinoOptions: LoggerOptions = {
       level: logLevel,
       formatters: {
-        level: (label) => ({ level: label }),
+        level: (label) =>
+          onGcp
+            ? { level: label, severity: toGcpSeverity(label) }
+            : { level: label },
       },
+      // A worker logs under its own name (auth-worker); SERVICE_NAME stays
+      // its base service, which its secrets belong to
       base: {
-        service: process.env.SERVICE_NAME || 'unknown',
+        service:
+          process.env.WORKER_NAME || process.env.SERVICE_NAME || 'unknown',
       },
       timestamp: pino.stdTimeFunctions.isoTime,
       // Configure redaction for PII protection
@@ -122,30 +133,27 @@ export class LoggerService {
   }
 
   /**
-   * Get trace context from active OTEL span
+   * Trace fields from the active span (the request's, the job's): the IDs,
+   * plus what the cloud's console reads to link the line to its trace
    */
-  private getTraceContext(): { trace_id?: string; span_id?: string } {
+  private getTraceContext(): Record<string, string | boolean> {
     const activeSpan = trace.getActiveSpan();
     if (!activeSpan) {
       return {};
     }
 
-    const spanContext = activeSpan.spanContext();
-    return {
-      trace_id: spanContext.traceId,
-      span_id: spanContext.spanId,
-    };
+    return buildTraceLogFields(
+      activeSpan.spanContext(),
+      process.env.SECRETS_PROVIDER,
+      process.env.GCP_PROJECT_ID,
+    );
   }
 
   private formatMessage(message: string, context?: LogContext): object {
-    const traceContext = this.getTraceContext();
-
     return {
       ...(this.context && { context: this.context }),
-      // Include trace context if available, otherwise fall back to correlationId
-      ...traceContext,
-      ...(this.correlationId &&
-        !traceContext.trace_id && { correlationId: this.correlationId }),
+      ...this.getTraceContext(),
+      ...(this.correlationId && { correlationId: this.correlationId }),
       msg: message,
       ...context,
     };

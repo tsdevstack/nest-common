@@ -1,14 +1,72 @@
 import { describe, it, expect } from '@rstest/core';
 
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { MODULE_METADATA } from '@nestjs/common/constants';
 import { ObservabilityModule } from './observability.module';
+import { ObservabilityRootModule } from './observability-root.module';
+import { TelemetryModule } from '../telemetry/telemetry.module';
+import { HealthModule } from '../health/health.module';
+import { LoggingInterceptor } from '../logging/logging.interceptor';
+import { MetricsInterceptor } from '../metrics/metrics.interceptor';
+
+function interceptorsOf(providers: unknown[] | undefined): unknown[] {
+  return (providers ?? [])
+    .filter(
+      (p): p is { provide: unknown; useClass: unknown } =>
+        typeof p === 'object' &&
+        p !== null &&
+        (p as { provide?: unknown }).provide === APP_INTERCEPTOR,
+    )
+    .map((p) => p.useClass);
+}
 
 describe('ObservabilityModule', () => {
   describe('forRoot', () => {
     it('should return a DynamicModule', () => {
       const result = ObservabilityModule.forRoot();
 
-      expect(result.module).toBe(ObservabilityModule);
+      expect(result.module).toBe(ObservabilityRootModule);
       expect(result.global).toBe(true);
+    });
+
+    it('should build on a module with no @Module() providers or imports of its own', () => {
+      // Nest adds the dynamic module's providers to its class's metadata;
+      // ObservabilityModule's would register every interceptor twice
+      const result = ObservabilityModule.forRoot();
+
+      expect(
+        Reflect.getMetadata(MODULE_METADATA.PROVIDERS, result.module) ?? [],
+      ).toEqual([]);
+      expect(
+        Reflect.getMetadata(MODULE_METADATA.IMPORTS, result.module) ?? [],
+      ).toEqual([]);
+    });
+
+    it('should register each interceptor once', () => {
+      const result = ObservabilityModule.forRoot();
+
+      expect(interceptorsOf(result.providers)).toEqual([
+        LoggingInterceptor,
+        MetricsInterceptor,
+      ]);
+    });
+
+    it('should leave the metrics interceptor and health out when disabled', () => {
+      const result = ObservabilityModule.forRoot({
+        metrics: false,
+        health: false,
+      });
+
+      expect(interceptorsOf(result.providers)).toEqual([LoggingInterceptor]);
+      expect(result.imports).not.toContain(HealthModule);
+    });
+
+    it('should keep the defaults for a bare import', () => {
+      expect(
+        interceptorsOf(
+          Reflect.getMetadata(MODULE_METADATA.PROVIDERS, ObservabilityModule),
+        ),
+      ).toEqual([LoggingInterceptor, MetricsInterceptor]);
     });
 
     it('should include all modules by default', () => {
@@ -38,13 +96,18 @@ describe('ObservabilityModule', () => {
       );
     });
 
-    it('should exclude tracing when disabled', () => {
-      const withTracing = ObservabilityModule.forRoot();
-      const withoutTracing = ObservabilityModule.forRoot({ tracing: false });
+    it('should tell telemetry when tracing is disabled', () => {
+      const result = ObservabilityModule.forRoot({ tracing: false });
 
-      expect(withoutTracing.providers!.length).toBeLessThan(
-        withTracing.providers!.length,
+      // The request spans come from createApp's middleware; without a
+      // registered tracer they are no-ops
+      const telemetry = result.imports!.find(
+        (m) => (m as { module?: unknown }).module === TelemetryModule,
+      ) as { providers: { provide: string; useValue?: unknown }[] };
+      const options = telemetry.providers.find(
+        (p) => p.provide === 'TELEMETRY_MODULE_OPTIONS',
       );
+      expect(options?.useValue).toMatchObject({ tracing: false });
     });
 
     it('should exclude health when disabled', () => {

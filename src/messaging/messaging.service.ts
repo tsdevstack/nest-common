@@ -2,12 +2,15 @@ import { Injectable, OnModuleDestroy, Logger, Inject } from '@nestjs/common';
 import { hostname } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import type Redis from 'ioredis';
+import { SpanKind, SpanStatusCode, context, trace } from '@opentelemetry/api';
 import { RedisService } from '../redis/redis.service';
 import {
   MESSAGING_OPTIONS_TOKEN,
   MESSAGING_CONSUMER_REDIS_TOKEN,
   DEFAULT_MAX_LEN,
   DEFAULT_MAX_PAYLOAD_BYTES,
+  DEFAULT_REAP_IDLE_MS,
+  DEFAULT_REAP_INTERVAL_MS,
   SHUTDOWN_TIMEOUT_MS,
 } from './messaging.constants';
 import type {
@@ -17,7 +20,11 @@ import type {
 } from './messaging.interface';
 import { MessagingError, MessagingErrorCode } from './messaging.error';
 import { ensureConsumerGroup } from './ensure-consumer-group';
+import { hasConsumerGroups } from './has-consumer-groups';
+import { removeUnsubscribedGroups } from './remove-unsubscribed-groups';
 import { startConsumerLoop } from './consumer-loop';
+import { buildTraceFields } from './build-trace-fields';
+import { MESSAGING_TRACER_NAME } from '../telemetry/telemetry.constants';
 import { deleteConsumerIfEmpty } from './delete-consumer-if-empty';
 
 @Injectable()
@@ -27,6 +34,15 @@ export class MessagingService implements OnModuleDestroy {
   private readonly stopFns: Array<() => Promise<void>> = [];
   private readonly prefix: string;
   private started = false;
+
+  /**
+   * Streams that have a subscriber group. Their subscribers delete what every
+   * subscriber finished (trimReadMessages), so publishing doesn't trim them.
+   */
+  private readonly subscribedStreams = new Set<string>();
+
+  /** Repeats the removal of groups on topics this service left */
+  private unsubscribedGroupsTimer: NodeJS.Timeout | null = null;
 
   /** Consumer registrations to clean up on shutdown */
   private readonly registrations: Array<{
@@ -64,6 +80,15 @@ export class MessagingService implements OnModuleDestroy {
     this.started = true;
 
     const topics = this.options.topics ?? [];
+
+    // Groups this service left behind on topics it no longer subscribes to
+    // would stop the deleting of read messages. Removed now and every few
+    // minutes: right after a deploy the previous version may still read them.
+    await this.removeUnsubscribedGroups(topics);
+    this.unsubscribedGroupsTimer = setInterval(() => {
+      void this.removeUnsubscribedGroups(topics);
+    }, DEFAULT_REAP_INTERVAL_MS);
+    this.unsubscribedGroupsTimer.unref();
     if (topics.length === 0) {
       this.logger.log('No topics to subscribe to — publish-only mode');
       return;
@@ -142,9 +167,8 @@ export class MessagingService implements OnModuleDestroy {
     const serialized = JSON.stringify(data);
     const payloadBytes = Buffer.byteLength(serialized, 'utf8');
 
-    // MAXLEN bounds entry count, not bytes — the stream's real memory ceiling
-    // is maxLen * payload size, so an oversized payload multiplies into an OOM
-    // on a noeviction instance.
+    // A stream's memory is its entry count times the payload size, so an
+    // oversized payload multiplies into an OOM on a noeviction instance.
     //
     // Warn rather than throw: publishing a large payload works today, and
     // turning that into a runtime failure on a patch upgrade would break
@@ -160,25 +184,55 @@ export class MessagingService implements OnModuleDestroy {
       );
     }
 
+    // The entry carries the publish span's trace: the subscriber's handler
+    // runs in it (runMessageHandler)
+    const span = trace
+      .getTracer(MESSAGING_TRACER_NAME)
+      .startSpan(`publish ${topic}`, {
+        kind: SpanKind.PRODUCER,
+        attributes: {
+          'messaging.operation.type': 'send',
+          'messaging.destination.name': topic,
+        },
+      });
+
     try {
-      const entryId = await this.redisService
-        .getClient()
-        .xadd(
-          streamKey,
-          'MAXLEN',
-          '~',
-          String(maxLen),
-          '*',
-          'data',
-          serialized,
-        );
+      const entryId = await context.with(
+        trace.setSpan(context.active(), span),
+        async () => {
+          const client = this.redisService.getClient();
+          if (
+            !this.subscribedStreams.has(streamKey) &&
+            (await hasConsumerGroups(client, streamKey))
+          ) {
+            this.subscribedStreams.add(streamKey);
+          }
+          // Until the topic has a subscriber, nobody deletes its entries: the
+          // stream keeps the newest maxLen, and a subscriber that starts
+          // later reads those. After that, no length cap: a cap deletes the
+          // oldest entries whether a subscriber read them or not.
+          const trim = this.subscribedStreams.has(streamKey)
+            ? []
+            : ['MAXLEN', '~', String(maxLen)];
+          return client.xadd(
+            streamKey,
+            ...trim,
+            '*',
+            'data',
+            serialized,
+            ...buildTraceFields(),
+          );
+        },
+      );
 
       if (!entryId) {
         throw new Error('XADD returned null');
       }
 
+      span.setAttribute('messaging.message.id', entryId);
       return entryId;
     } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR });
       throw new MessagingError(
         MessagingErrorCode.PUBLISH_FAILED,
         topic,
@@ -187,7 +241,20 @@ export class MessagingService implements OnModuleDestroy {
           error instanceof Error ? error.message : 'Unknown error'
         }`,
       );
+    } finally {
+      span.end();
     }
+  }
+
+  private removeUnsubscribedGroups(topics: string[]): Promise<void> {
+    return removeUnsubscribedGroups(
+      this.consumerRedis,
+      this.prefix,
+      this.options.consumerGroup,
+      topics,
+      this.logger,
+      DEFAULT_REAP_IDLE_MS,
+    );
   }
 
   /**
@@ -195,6 +262,10 @@ export class MessagingService implements OnModuleDestroy {
    */
   async onModuleDestroy(): Promise<void> {
     this.logger.log('Shutting down messaging consumers...');
+
+    if (this.unsubscribedGroupsTimer) {
+      clearInterval(this.unsubscribedGroupsTimer);
+    }
 
     // Stop all consumer loops
     const stopPromises = this.stopFns.map((stop) => stop());

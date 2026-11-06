@@ -12,6 +12,10 @@ rs.mock('./ensure-consumer-group', () => ({
   ensureConsumerGroup: rs.fn().mockResolvedValue(undefined),
 }));
 
+rs.mock('./remove-unsubscribed-groups', () => ({
+  removeUnsubscribedGroups: rs.fn().mockResolvedValue(undefined),
+}));
+
 rs.mock('./consumer-loop', () => ({
   startConsumerLoop: rs.fn().mockReturnValue({
     stop: rs.fn().mockResolvedValue(undefined),
@@ -22,7 +26,16 @@ import { MessagingService } from './messaging.service';
 import { RedisService } from '../redis/redis.service';
 import { ensureConsumerGroup } from './ensure-consumer-group';
 import { startConsumerLoop } from './consumer-loop';
+import { removeUnsubscribedGroups } from './remove-unsubscribed-groups';
 import { MessagingError, MessagingErrorCode } from './messaging.error';
+import { SpanKind, context, propagation, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import {
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+  TracerProvider,
+} from '@opentelemetry/sdk-trace';
 
 describe('MessagingService', () => {
   let service: MessagingService;
@@ -63,10 +76,17 @@ describe('MessagingService', () => {
   });
 
   describe('publish', () => {
-    it('should call XADD with correct arguments', async () => {
+    // No subscriber group yet unless a test says otherwise
+    let mockXinfo: ReturnType<typeof rs.fn>;
+    beforeEach(() => {
+      mockXinfo = rs.fn().mockRejectedValue(new Error('ERR no such key'));
+    });
+
+    it('should cap the stream while the topic has no subscriber', async () => {
       const mockXadd = rs.fn().mockResolvedValue('1709312000000-0');
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: mockXadd,
+        xinfo: mockXinfo,
       } as never);
 
       const entryId = await service.publish('user-created', { userId: '123' });
@@ -83,9 +103,96 @@ describe('MessagingService', () => {
       );
     });
 
+    it('should not cap the stream once the topic has a subscriber', async () => {
+      mockXinfo.mockResolvedValue([['name', 'g1', 'pending', 0]]);
+      const mockXadd = rs.fn().mockResolvedValue('1709312000000-0');
+      rs.mocked(mockRedisService.getClient).mockReturnValue({
+        xadd: mockXadd,
+        xinfo: mockXinfo,
+      } as never);
+
+      await service.publish('user-created', { userId: '123' });
+      await service.publish('user-created', { userId: '456' });
+
+      expect(mockXadd).toHaveBeenLastCalledWith(
+        'testproject:messaging:user-created',
+        '*',
+        'data',
+        '{"userId":"456"}',
+      );
+      // Once a subscriber is seen, the publisher stops asking
+      expect(mockXinfo).toHaveBeenCalledTimes(1);
+    });
+
+    it('should keep asking until the topic has a subscriber', async () => {
+      const mockXadd = rs.fn().mockResolvedValue('1-0');
+      rs.mocked(mockRedisService.getClient).mockReturnValue({
+        xadd: mockXadd,
+        xinfo: mockXinfo,
+      } as never);
+
+      await service.publish('user-created', { userId: '123' });
+      mockXinfo.mockResolvedValue([]);
+      await service.publish('user-created', { userId: '456' });
+
+      expect(mockXinfo).toHaveBeenCalledTimes(2);
+      expect(mockXadd.mock.calls[1].slice(1, 4)).toEqual([
+        'MAXLEN',
+        '~',
+        '10000',
+      ]);
+    });
+
+    it('should fail the publish when Redis cannot say whether the topic has a subscriber', async () => {
+      mockXinfo.mockRejectedValue(new Error('Connection reset'));
+      rs.mocked(mockRedisService.getClient).mockReturnValue({
+        xadd: rs.fn().mockResolvedValue('1-0'),
+        xinfo: mockXinfo,
+      } as never);
+
+      await expect(
+        service.publish('user-created', { userId: '123' }),
+      ).rejects.toThrow(MessagingError);
+    });
+
+    it("should carry the publisher's trace in the entry", async () => {
+      const exporter = new InMemorySpanExporter();
+      trace.setGlobalTracerProvider(
+        new TracerProvider({
+          spanProcessors: [new SimpleSpanProcessor({ exporter })],
+        }),
+      );
+      context.setGlobalContextManager(
+        new AsyncLocalStorageContextManager().enable(),
+      );
+      propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+      const mockXadd = rs.fn().mockResolvedValue('1709312000000-0');
+      rs.mocked(mockRedisService.getClient).mockReturnValue({
+        xadd: mockXadd,
+        xinfo: mockXinfo,
+      } as never);
+
+      try {
+        await service.publish('user-created', { userId: '123' });
+
+        const [publish] = exporter.getFinishedSpans();
+        expect(publish.name).toBe('publish user-created');
+        expect(publish.kind).toBe(SpanKind.PRODUCER);
+        expect(mockXadd.mock.calls[0].slice(7)).toEqual([
+          'traceparent',
+          `00-${publish.spanContext().traceId}-${publish.spanContext().spanId}-01`,
+        ]);
+      } finally {
+        trace.disable();
+        context.disable();
+        propagation.disable();
+      }
+    });
+
     it('should throw MessagingError on failure', async () => {
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: rs.fn().mockRejectedValue(new Error('Redis down')),
+        xinfo: mockXinfo,
       } as never);
 
       await expect(
@@ -114,6 +221,7 @@ describe('MessagingService', () => {
       const mockXadd = rs.fn().mockResolvedValue('1-0');
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: mockXadd,
+        xinfo: mockXinfo,
       } as never);
 
       await customService.publish('test-topic', { x: 1 });
@@ -143,6 +251,7 @@ describe('MessagingService', () => {
       const mockXadd = rs.fn().mockResolvedValue('1-0');
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: mockXadd,
+        xinfo: mockXinfo,
       } as never);
 
       // Publishing must keep working — an upgrade cannot break a running service
@@ -169,6 +278,7 @@ describe('MessagingService', () => {
 
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: rs.fn().mockResolvedValue('1-0'),
+        xinfo: mockXinfo,
       } as never);
 
       // 20 multi-byte chars serialize to well over 40 bytes
@@ -190,6 +300,7 @@ describe('MessagingService', () => {
 
       rs.mocked(mockRedisService.getClient).mockReturnValue({
         xadd: rs.fn().mockResolvedValue('1-0'),
+        xinfo: mockXinfo,
       } as never);
 
       await expect(
@@ -253,6 +364,39 @@ describe('MessagingService', () => {
 
       // Should only create one consumer loop
       expect(startConsumerLoop).toHaveBeenCalledTimes(1);
+    });
+
+    it("should remove this service's groups on topics it no longer subscribes to", async () => {
+      await service.start();
+
+      expect(removeUnsubscribedGroups).toHaveBeenCalledWith(
+        mockConsumerRedis,
+        'testproject',
+        'offers-service',
+        ['user-created'],
+        expect.any(Object),
+        600_000,
+      );
+    });
+
+    it('should remove them in a publish-only service too (its last subscription removed)', async () => {
+      const publishOnlyService = new MessagingService(
+        mockRedisService,
+        { consumerGroup: 'auth-service' },
+        mockConsumerRedis as never,
+      );
+
+      await publishOnlyService.start();
+
+      expect(removeUnsubscribedGroups).toHaveBeenCalledWith(
+        mockConsumerRedis,
+        'testproject',
+        'auth-service',
+        [],
+        expect.any(Object),
+        600_000,
+      );
+      await publishOnlyService.onModuleDestroy();
     });
 
     it('should log publish-only mode when no topics', async () => {
