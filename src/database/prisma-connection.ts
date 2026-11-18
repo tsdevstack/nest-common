@@ -25,8 +25,8 @@ export interface PrismaConnectionResult {
  * Create Prisma connection configuration with pg adapter.
  *
  * Prisma 7 with "client" engine requires an adapter, so pg Pool is used
- * in all environments. Production requires DB_POOL_MAX, development
- * defaults to 5 connections.
+ * in all environments. Production requires DATABASE_URL and DB_POOL_MAX,
+ * development defaults to 5 connections.
  *
  * @returns Configuration object and pool reference for cleanup
  *
@@ -54,6 +54,14 @@ export function createPrismaConnection(): PrismaConnectionResult {
 
   if (isProduction && !process.env.DB_POOL_MAX) {
     throw new Error('DB_POOL_MAX is required in production');
+  }
+
+  // Without it, pg connects to its local default (127.0.0.1:5432), and the
+  // startup check spends a minute on an address that can't answer
+  if (isProduction && !process.env.DATABASE_URL) {
+    throw new Error(
+      "DATABASE_URL is required in production: the deploy sets it once the service's database exists",
+    );
   }
 
   const poolMax = isProduction ? parseInt(process.env.DB_POOL_MAX!, 10) : 5; // Development default

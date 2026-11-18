@@ -5,6 +5,7 @@ interface AxiosRequestLike {
 /** The part of a generated client (swagger-typescript-api) this uses */
 export interface AxiosInstanceClient {
   instance: {
+    defaults?: { timeout?: number };
     interceptors: {
       request: {
         use(onFulfilled: <T extends AxiosRequestLike>(config: T) => T): unknown;

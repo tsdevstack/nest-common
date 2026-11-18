@@ -57,6 +57,40 @@ describe('BaseServiceClient', () => {
       expect(use).toHaveBeenCalledWith(injectTraceContext);
     });
 
+    it('should give calls a 30 second timeout when the client has none', () => {
+      const generated = {
+        instance: {
+          defaults: { timeout: 0 },
+          interceptors: { request: { use: rs.fn() } },
+        },
+      };
+
+      client.doInitialize({
+        baseURL: 'http://localhost:3000',
+        apiKey: 'test-key',
+        createClient: () => generated,
+      });
+
+      expect(generated.instance.defaults.timeout).toBe(30_000);
+    });
+
+    it('should keep a timeout the client was created with', () => {
+      const generated = {
+        instance: {
+          defaults: { timeout: 120_000 },
+          interceptors: { request: { use: rs.fn() } },
+        },
+      };
+
+      client.doInitialize({
+        baseURL: 'http://localhost:3000',
+        apiKey: 'test-key',
+        createClient: () => generated,
+      });
+
+      expect(generated.instance.defaults.timeout).toBe(120_000);
+    });
+
     it('should throw if baseURL is missing', () => {
       expect(() =>
         client.doInitialize({

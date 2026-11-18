@@ -5,8 +5,7 @@ import {
   DEFAULT_REDACT_PATHS,
   type LoggerModuleOptions,
 } from './logger.interface';
-import { buildTraceLogFields } from './build-trace-log-fields';
-import { toGcpSeverity } from './to-gcp-severity';
+import { buildTraceLogFields, toGcpSeverity } from '@tsdevstack/telemetry';
 
 export interface LogContext {
   [key: string]: unknown;

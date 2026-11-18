@@ -4,7 +4,7 @@ Shared NestJS modules for tsdevstack microservices. Provides auth, rate limiting
 
 ## Features
 
-- **Authentication**: Kong JWT validation guard with public/partner route decorators, [OWASP-aligned](https://tsdevstack.dev/authentication/jwt-tokens#owasp-alignment) timing-safe token comparison
+- **Authentication**: Kong JWT validation guard with public/partner route decorators, [OWASP-aligned](https://tsdevstack.dev/docs/authentication/jwt-tokens#owasp-alignment) timing-safe token comparison
 - **Rate Limiting**: Redis-backed rate limiting with per-route configuration
 - **Email Rate Limiting**: Dedicated rate limiter for email-sending endpoints
 - **Secrets Management**: Multi-provider secrets (GCP Secret Manager, AWS Secrets Manager, Azure Key Vault)
@@ -31,11 +31,10 @@ npm install @tsdevstack/nest-common
 import { startApp } from '@tsdevstack/nest-common';
 import { AppModule } from './app.module';
 
-startApp(AppModule, {
-  serviceName: 'my-service',
-  port: 3000,
-});
+startApp(AppModule);
 ```
+
+The service name comes from the service's `package.json`, and the port from `PORT` or, locally, the project's `.tsdevstack/config.json`.
 
 ### Import modules
 
@@ -50,7 +49,7 @@ import {
 
 @Module({
   imports: [
-    ObservabilityModule.register({ serviceName: 'my-service' }),
+    ObservabilityModule,
     SecretsModule,
     AuthModule,
     RedisModule,
@@ -86,14 +85,14 @@ export class UsersController {
 
 | Module | Description |
 |--------|-------------|
-| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators. [Guide](https://tsdevstack.dev/authentication/overview) |
+| `AuthModule` | Kong JWT validation, `@Public()` and `@PartnerApi()` decorators. [Guide](https://tsdevstack.dev/docs/authentication/overview) |
 | `RedisModule` | Redis connection with retry and health checks |
 | `RateLimitModule` | Redis-backed rate limiting with `@RateLimit()` decorator |
 | `EmailRateLimitModule` | Dedicated email rate limiting |
 | `SecretsModule` | Multi-cloud secrets loading (GCP, AWS, Azure) |
-| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints. [Guide](https://tsdevstack.dev/features/observability) |
-| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob. [Guide](https://tsdevstack.dev/features/object-storage) |
-| `MessagingModule` | Inter-service event broadcasting via Redis Streams. [Guide](https://tsdevstack.dev/features/async-messaging) |
+| `ObservabilityModule` | Logging, metrics, tracing, and health endpoints. [Guide](https://tsdevstack.dev/docs/features/observability) |
+| `StorageModule` | Object storage with unified API across S3, GCS, Azure Blob. [Guide](https://tsdevstack.dev/docs/features/object-storage) |
+| `MessagingModule` | Inter-service event broadcasting via Redis Streams. [Guide](https://tsdevstack.dev/docs/features/async-messaging) |
 | `NotificationModule` | Email (Resend), SMS, and push notifications |
 | `BullConfigModule` | BullMQ queue configuration |
 

@@ -41,7 +41,9 @@ export class MetricsService implements OnModuleInit {
 
     // HTTP request duration histogram
     this._httpRequestDuration = this.meter.createHistogram(
-      this.prefix ? `${this.prefix}_http_request_duration_seconds` : 'http_request_duration_seconds',
+      this.prefix
+        ? `${this.prefix}_http_request_duration_seconds`
+        : 'http_request_duration_seconds',
       {
         description: 'Duration of HTTP requests in seconds',
         unit: 's',
@@ -50,7 +52,9 @@ export class MetricsService implements OnModuleInit {
 
     // HTTP request counter
     this._httpRequestTotal = this.meter.createCounter(
-      this.prefix ? `${this.prefix}_http_requests_total` : 'http_requests_total',
+      this.prefix
+        ? `${this.prefix}_http_requests_total`
+        : 'http_requests_total',
       {
         description: 'Total number of HTTP requests',
       },
@@ -58,7 +62,9 @@ export class MetricsService implements OnModuleInit {
 
     // Active connections gauge (using UpDownCounter in OTEL)
     this._httpActiveConnections = this.meter.createUpDownCounter(
-      this.prefix ? `${this.prefix}_http_active_connections` : 'http_active_connections',
+      this.prefix
+        ? `${this.prefix}_http_active_connections`
+        : 'http_active_connections',
       {
         description: 'Number of active HTTP connections',
       },
@@ -146,38 +152,6 @@ export class MetricsService implements OnModuleInit {
   ): UpDownCounter | undefined {
     if (!this.meter) return undefined;
     return this.meter.createUpDownCounter(name, options);
-  }
-
-  /**
-   * Get metrics in Prometheus format (delegated to TelemetryService)
-   */
-  async getMetrics(): Promise<string> {
-    if (!this.telemetryService) {
-      return '# No telemetry service available\n';
-    }
-    const exporter = this.telemetryService.getPrometheusExporter();
-    if (!exporter) {
-      return '# No prometheus exporter available\n';
-    }
-    // The PrometheusExporter provides metrics via its internal server
-    // We need to collect metrics differently
-    return this.collectMetrics();
-  }
-
-  /**
-   * Collect metrics in Prometheus format
-   */
-  private async collectMetrics(): Promise<string> {
-    // For now, return a placeholder - the actual metrics endpoint
-    // will be handled by the Prometheus exporter's HTTP handler
-    return '# Metrics collected via OpenTelemetry Prometheus Exporter\n';
-  }
-
-  /**
-   * Get content type for Prometheus metrics
-   */
-  getContentType(): string {
-    return 'text/plain; charset=utf-8';
   }
 
   /**

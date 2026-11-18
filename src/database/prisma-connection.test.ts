@@ -49,6 +49,13 @@ describe('createPrismaConnection', () => {
 
       expect(() => createPrismaConnection()).not.toThrow();
     });
+
+    it('should not require DATABASE_URL (pg reads the PG* settings)', () => {
+      process.env.NODE_ENV = 'development';
+      delete process.env.DATABASE_URL;
+
+      expect(() => createPrismaConnection()).not.toThrow();
+    });
   });
 
   describe('Pool settings', () => {
@@ -76,6 +83,18 @@ describe('createPrismaConnection', () => {
       expect(() => createPrismaConnection()).toThrow(
         'DB_POOL_MAX is required in production',
       );
+    });
+
+    it('should throw at once if DATABASE_URL is not set', () => {
+      process.env.NODE_ENV = 'production';
+      process.env.DB_POOL_MAX = '20';
+      delete process.env.DATABASE_URL;
+
+      expect(() => createPrismaConnection()).toThrow(
+        'DATABASE_URL is required in production',
+      );
+      // Not left to pg's local default (127.0.0.1:5432)
+      expect(MockPool).not.toHaveBeenCalled();
     });
 
     it('should use DB_POOL_MAX for pool size', () => {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { injectTraceContext } from '@tsdevstack/telemetry';
 import { hasAxiosInstance } from './has-axios-instance';
+import { SERVICE_CLIENT_TIMEOUT_MS } from './service-client.constants';
 
 /**
  * Configuration for initializing a service client.
@@ -136,6 +137,11 @@ export abstract class BaseServiceClient<TApi> {
       // The called service continues this request's trace
       if (hasAxiosInstance(this.client)) {
         this.client.instance.interceptors.request.use(injectTraceContext);
+        // A hanging service fails the call instead of holding it forever
+        const { defaults } = this.client.instance;
+        if (defaults && !defaults.timeout) {
+          defaults.timeout = SERVICE_CLIENT_TIMEOUT_MS;
+        }
       }
       this.logger.log(`Service client initialized: ${config.baseURL}`);
     } catch (error) {

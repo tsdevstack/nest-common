@@ -196,13 +196,6 @@ describe('MetricsService', () => {
     });
   });
 
-  describe('getContentType', () => {
-    it('should return plain text content type', () => {
-      const contentType = metricsService.getContentType();
-      expect(contentType).toBe('text/plain; charset=utf-8');
-    });
-  });
-
   describe('getTelemetryService', () => {
     it('should return the telemetry service', () => {
       const telemetry = metricsService.getTelemetryService();
