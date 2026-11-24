@@ -58,6 +58,18 @@ export type { AppBootstrapOptions } from './bootstrap/create-app';
 export { loadEnvIfExists } from './bootstrap/load-env-if-exists';
 export { startApp } from './bootstrap/start-app';
 export { startWorker } from './bootstrap/start-worker';
+export { runCronJob } from './bootstrap/run-cron-job';
+
+// Cron jobs (Phase 55): run-to-completion handlers of a service
+export type { CronJobHandler } from './cron/cron-job-handler.interface';
+export { provideCronJobs } from './cron/provide-cron-jobs';
+export {
+  CRON_JOBS,
+  CRON_JOB_NAME_ENV,
+  CRON_JOB_TIMEOUT_ENV,
+  CRON_FINISHED_MESSAGE,
+  type CronJobOutcome,
+} from './cron/cron.constants';
 
 // OpenAPI Documentation
 export { generateSwaggerDocs } from './open-api-docs/generate-swagger-docs';

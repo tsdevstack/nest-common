@@ -7,6 +7,7 @@ import {
 } from '@opentelemetry/api';
 import { TelemetryService } from '../telemetry/telemetry.service';
 import type { MetricsModuleOptions } from './metrics.interface';
+import { toSnakeCase } from '../utils/to-snake-case';
 
 @Injectable()
 export class MetricsService implements OnModuleInit {
@@ -25,7 +26,7 @@ export class MetricsService implements OnModuleInit {
   ) {
     // Sanitize prefix: metric names use underscores
     const rawPrefix = options.prefix || process.env.SERVICE_NAME || '';
-    this.prefix = rawPrefix.replace(/-/g, '_');
+    this.prefix = toSnakeCase(rawPrefix);
   }
 
   onModuleInit(): void {

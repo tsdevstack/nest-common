@@ -12,6 +12,7 @@ const { mockRedisInstance, MockRedis } = rs.hoisted(() => {
     incr: rs.fn(),
     expire: rs.fn(),
     del: rs.fn(),
+    eval: rs.fn(),
   };
   return {
     mockRedisInstance: instance,
@@ -235,6 +236,75 @@ describe('RedisService', () => {
       mockRedisInstance.set.mockRejectedValue(new Error('fail'));
 
       const result = await service.set('key', 'value');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('setIfAbsent', () => {
+    beforeEach(async () => {
+      await service.onModuleInit();
+    });
+
+    it('should SET NX EX and return true when the key was set', async () => {
+      mockRedisInstance.set.mockResolvedValue('OK');
+
+      const result = await service.setIfAbsent('lock', 'run-1', 660);
+
+      expect(mockRedisInstance.set).toHaveBeenCalledWith(
+        'lock',
+        'run-1',
+        'EX',
+        660,
+        'NX',
+      );
+      expect(result).toBe(true);
+    });
+
+    it('should return false when the key already exists', async () => {
+      mockRedisInstance.set.mockResolvedValue(null);
+
+      const result = await service.setIfAbsent('lock', 'run-1', 660);
+      expect(result).toBe(false);
+    });
+
+    it('should return null on error', async () => {
+      mockRedisInstance.set.mockRejectedValue(new Error('fail'));
+
+      const result = await service.setIfAbsent('lock', 'run-1', 660);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('deleteIfEquals', () => {
+    beforeEach(async () => {
+      await service.onModuleInit();
+    });
+
+    it('should run the compare-and-delete script and return true when deleted', async () => {
+      mockRedisInstance.eval.mockResolvedValue(1);
+
+      const result = await service.deleteIfEquals('lock', 'run-1');
+
+      expect(mockRedisInstance.eval).toHaveBeenCalledWith(
+        expect.stringContaining('redis.call("del", KEYS[1])'),
+        1,
+        'lock',
+        'run-1',
+      );
+      expect(result).toBe(true);
+    });
+
+    it('should return false when the key holds another value', async () => {
+      mockRedisInstance.eval.mockResolvedValue(0);
+
+      const result = await service.deleteIfEquals('lock', 'run-2');
+      expect(result).toBe(false);
+    });
+
+    it('should return false on error', async () => {
+      mockRedisInstance.eval.mockRejectedValue(new Error('fail'));
+
+      const result = await service.deleteIfEquals('lock', 'run-1');
       expect(result).toBe(false);
     });
   });

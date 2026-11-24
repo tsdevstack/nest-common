@@ -20,7 +20,7 @@ export type SecretsProviderType = 'local' | 'gcp' | 'aws' | 'azure';
  * - SERVICE_NAME: Set by bootstrap
  *
  * Provider-specific env vars:
- * - GCP: GCP_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS (or K_SERVICE on Cloud Run)
+ * - GCP: GCP_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS (or K_SERVICE / CLOUD_RUN_JOB on Cloud Run)
  * - AWS: AWS_REGION (credentials from task role on ECS, or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)
  * - Azure: AZURE_CLIENT_ID, AZURE_KEYVAULT_NAME (+ AZURE_CLIENT_SECRET, AZURE_TENANT_ID for SP auth)
  *
@@ -111,10 +111,12 @@ export class SecretsProviderFactory {
         if (!process.env.GCP_PROJECT_ID) {
           missing.push('GCP_PROJECT_ID');
         }
-        // On Cloud Run, credentials come from the attached service account (ADC)
-        // K_SERVICE is automatically set by Cloud Run
+        // On Cloud Run, credentials come from the attached service account (ADC).
+        // Cloud Run sets K_SERVICE in a service and CLOUD_RUN_JOB in a job
+        // (a cron job's container)
         if (
           !process.env.K_SERVICE &&
+          !process.env.CLOUD_RUN_JOB &&
           !process.env.GOOGLE_APPLICATION_CREDENTIALS
         ) {
           missing.push('GOOGLE_APPLICATION_CREDENTIALS');

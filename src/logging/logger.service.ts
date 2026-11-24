@@ -6,6 +6,7 @@ import {
   type LoggerModuleOptions,
 } from './logger.interface';
 import { buildTraceLogFields, toGcpSeverity } from '@tsdevstack/telemetry';
+import { CRON_JOB_NAME_ENV } from '../cron/cron.constants';
 
 export interface LogContext {
   [key: string]: unknown;
@@ -62,6 +63,10 @@ export class LoggerService {
       base: {
         service:
           process.env.WORKER_NAME || process.env.SERVICE_NAME || 'unknown',
+        // A cron job's lines carry the job's name next to its service's
+        ...(process.env[CRON_JOB_NAME_ENV] && {
+          cronJob: process.env[CRON_JOB_NAME_ENV],
+        }),
       },
       timestamp: pino.stdTimeFunctions.isoTime,
       // Configure redaction for PII protection

@@ -14,3 +14,7 @@ export const REDIS_HEALTH_PING_TIMEOUT_MS = 2000;
  * to RESP3 is a deliberate change for a later live round.
  */
 export const REDIS_PROTOCOL = 2;
+
+/** Lua for deleteIfEquals: DEL only while the key holds the given value */
+export const REDIS_DELETE_IF_EQUALS_SCRIPT =
+  'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end return 0';

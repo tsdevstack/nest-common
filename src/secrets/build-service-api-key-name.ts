@@ -1,4 +1,5 @@
 import { SERVICE_API_KEY_SUFFIX } from './secrets.constants';
+import { toScreamingSnakeCase } from '../utils/to-screaming-snake-case';
 
 /**
  * Returns the name a service's API key is stored under, as the CLI generates
@@ -8,5 +9,5 @@ import { SERVICE_API_KEY_SUFFIX } from './secrets.constants';
  * @returns The secret key name
  */
 export function buildServiceApiKeyName(serviceName: string): string {
-  return `${serviceName.toUpperCase().replace(/-/g, '_')}${SERVICE_API_KEY_SUFFIX}`;
+  return `${toScreamingSnakeCase(serviceName)}${SERVICE_API_KEY_SUFFIX}`;
 }

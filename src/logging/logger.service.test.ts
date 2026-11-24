@@ -251,6 +251,7 @@ describe('LoggerService', () => {
     const original = {
       SERVICE_NAME: process.env.SERVICE_NAME,
       WORKER_NAME: process.env.WORKER_NAME,
+      CRON_JOB_NAME: process.env.CRON_JOB_NAME,
     };
 
     afterEach(() => {
@@ -263,11 +264,15 @@ describe('LoggerService', () => {
       }
     });
 
-    function baseService(): unknown {
+    function base(): { service: unknown; cronJob?: unknown } {
       const [options] = rs.mocked(pino).mock.calls[0] as unknown as [
-        { base: { service: unknown } },
+        { base: { service: unknown; cronJob?: unknown } },
       ];
-      return options.base.service;
+      return options.base;
+    }
+
+    function baseService(): unknown {
+      return base().service;
     }
 
     it('should name lines after the service', () => {
@@ -284,6 +289,26 @@ describe('LoggerService', () => {
       new LoggerService().info('hello');
 
       expect(baseService()).toBe('auth-worker');
+    });
+
+    it("should carry a cron job's name next to its service", () => {
+      process.env.SERVICE_NAME = 'auth-service';
+      delete process.env.WORKER_NAME;
+      process.env.CRON_JOB_NAME = 'usage-report';
+      new LoggerService().info('hello');
+
+      expect(base()).toEqual({
+        service: 'auth-service',
+        cronJob: 'usage-report',
+      });
+    });
+
+    it('should add no cronJob field outside a cron job', () => {
+      process.env.SERVICE_NAME = 'auth-service';
+      delete process.env.CRON_JOB_NAME;
+      new LoggerService().info('hello');
+
+      expect(base()).not.toHaveProperty('cronJob');
     });
   });
   describe('trace fields', () => {

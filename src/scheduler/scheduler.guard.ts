@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { OAuth2Client } from 'google-auth-library';
 import { SecretsService } from '../secrets/secrets.service';
+import { toScreamingSnakeCase } from '../utils/to-screaming-snake-case';
 
 /**
  * SchedulerGuard
@@ -184,7 +185,7 @@ export class SchedulerGuard implements CanActivate {
       }
 
       // Build secret key: auth-service → AUTH_SERVICE_URL
-      const urlSecretKey = `${serviceName.toUpperCase().replace(/-/g, '_')}_URL`;
+      const urlSecretKey = `${toScreamingSnakeCase(serviceName)}_URL`;
       const serviceUrl = await this.secrets.get(urlSecretKey);
 
       const ticket = await this.oauth2Client.verifyIdToken({

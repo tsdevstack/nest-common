@@ -83,6 +83,7 @@ describe('SecretsProviderFactory', () => {
         process.env.GCP_PROJECT_ID = 'my-gcp-project';
         delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
         delete process.env.K_SERVICE;
+        delete process.env.CLOUD_RUN_JOB;
 
         expect(() =>
           SecretsProviderFactory.createProvider('test-service'),
@@ -94,6 +95,24 @@ describe('SecretsProviderFactory', () => {
         process.env.PROJECT_NAME = 'test-project';
         process.env.GCP_PROJECT_ID = 'my-gcp-project';
         process.env.K_SERVICE = 'auth-service';
+        delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+        SecretsProviderFactory.createProvider('test-service');
+
+        expect(GCPSecretsProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectName: 'test-project',
+            serviceName: 'test-service',
+          }),
+        );
+      });
+
+      it('should skip GOOGLE_APPLICATION_CREDENTIALS check in a Cloud Run job (CLOUD_RUN_JOB set)', () => {
+        process.env.SECRETS_PROVIDER = 'gcp';
+        process.env.PROJECT_NAME = 'test-project';
+        process.env.GCP_PROJECT_ID = 'my-gcp-project';
+        process.env.CLOUD_RUN_JOB = 'test-project-cron-usage-report';
+        delete process.env.K_SERVICE;
         delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
         SecretsProviderFactory.createProvider('test-service');

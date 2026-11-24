@@ -7,7 +7,10 @@ import {
 import Redis from 'ioredis';
 import { SecretsService } from '../secrets/secrets.service';
 import { redisRetryStrategy } from './redis-retry-strategy';
-import { REDIS_PROTOCOL } from './redis.constants';
+import {
+  REDIS_DELETE_IF_EQUALS_SCRIPT,
+  REDIS_PROTOCOL,
+} from './redis.constants';
 
 /** Called every time the Redis connection becomes ready */
 export type RedisReadyListener = () => void | Promise<void>;
@@ -172,6 +175,47 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       return result > 0;
     } catch (error) {
       this.logger.error(`Error deleting key ${key}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Set the key only when it doesn't exist (SET NX EX): the lock primitive.
+   *
+   * @returns true when set, false when the key already existed, null when
+   * Redis couldn't be asked (callers decide between fail-open and fail-closed)
+   */
+  async setIfAbsent(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+  ): Promise<boolean | null> {
+    try {
+      const result = await this.redis.set(key, value, 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (error) {
+      this.logger.error(`Error setting key ${key} if absent:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Delete the key only while it still holds this value, atomically: a lock
+   * holder releases its own lock, never one that expired and was retaken.
+   *
+   * @returns true when deleted
+   */
+  async deleteIfEquals(key: string, value: string): Promise<boolean> {
+    try {
+      const result = await this.redis.eval(
+        REDIS_DELETE_IF_EQUALS_SCRIPT,
+        1,
+        key,
+        value,
+      );
+      return result === 1;
+    } catch (error) {
+      this.logger.error(`Error deleting key ${key} if equal:`, error);
       return false;
     }
   }

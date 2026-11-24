@@ -13,6 +13,7 @@ import type {
 } from './providers/provider-factory';
 import type { StorageProvider } from './storage.interface';
 import { buildStorageConfig } from './build-storage-config';
+import { toScreamingSnakeCase } from '../utils/to-screaming-snake-case';
 
 export interface StorageModuleOptions {
   buckets: string[];
@@ -72,7 +73,7 @@ export class StorageModule {
         secrets: SecretsService,
         storageConfig: StorageConfigResult,
       ): Promise<StorageProvider> => {
-        const bucketEnvKey = `STORAGE_BUCKET_${bucket.replace(/-/g, '_').toUpperCase()}`;
+        const bucketEnvKey = `STORAGE_BUCKET_${toScreamingSnakeCase(bucket)}`;
         const cloudBucketName = await secrets.get(bucketEnvKey);
 
         return createStorageProvider(
